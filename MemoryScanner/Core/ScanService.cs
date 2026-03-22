@@ -273,6 +273,7 @@ public sealed class ScanService
         return dataType switch
         {
             MemoryDataType.Byte => byte.TryParse(trimmed, out var b) ? Assign(b, out value) : false,
+            MemoryDataType.Int16 => short.TryParse(trimmed, out var s16) ? Assign(s16, out value) : false,
             MemoryDataType.Int32 => int.TryParse(trimmed, out var i) ? Assign(i, out value) : false,
             MemoryDataType.Int64 => long.TryParse(trimmed, out var l) ? Assign(l, out value) : false,
             MemoryDataType.Float => float.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) ? Assign(f, out value) : false,
@@ -350,6 +351,18 @@ public sealed class ScanService
                 value = current;
                 return true;
             }
+            case MemoryDataType.Int16:
+            {
+                var current = BinaryPrimitives.ReadInt16LittleEndian(span.Slice(offset, sizeof(short)));
+                var target = (short)input;
+                if (!MatchDirect(comparison, current, target))
+                {
+                    return false;
+                }
+
+                value = current;
+                return true;
+            }
             case MemoryDataType.Int32:
             {
                 var current = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
@@ -417,6 +430,14 @@ public sealed class ScanService
                     bool hasBytePrevious = previous is not null && TryCoerce(previous, out previousByte);
                     return MatchTyped(comparison, currentByte, inputByte, previousByte, hasByteInput, hasBytePrevious);
 
+                case MemoryDataType.Int16:
+                    if (!TryCoerce(current, out int currentShort)) return false;
+                    int inputShort = default;
+                    bool hasShortInput = input is not null && TryCoerce(input, out inputShort);
+                    int previousShort = default;
+                    bool hasShortPrevious = previous is not null && TryCoerce(previous, out previousShort);
+                    return MatchTyped(comparison, currentShort, inputShort, previousShort, hasShortInput, hasShortPrevious);
+
                 case MemoryDataType.Int32:
                     if (!TryCoerce(current, out int currentInt)) return false;
                     int inputInt = default;
@@ -458,6 +479,7 @@ public sealed class ScanService
             return false;
         }
     }
+
     private static bool TryCoerce(object value, out byte result)
     {
         result = 0;
@@ -701,6 +723,7 @@ public sealed class ScanService
     private static int GetTypeSize(MemoryDataType dataType) => dataType switch
     {
         MemoryDataType.Byte => sizeof(byte),
+        MemoryDataType.Int16 => sizeof(short),
         MemoryDataType.Int32 => sizeof(int),
         MemoryDataType.Int64 => sizeof(long),
         MemoryDataType.Float => sizeof(float),
@@ -759,6 +782,10 @@ public sealed class ScanService
 
     private readonly record struct ScanSlice(ulong Start, ulong End);
 }
+
+
+
+
 
 
 

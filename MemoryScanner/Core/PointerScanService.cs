@@ -39,6 +39,7 @@ public sealed class PointerScanService
 
         var visited = new HashSet<(ulong, int)>();
         int limitReached = 0;
+        var resultLimit = options.UseResultLimit ? options.NormalizedResultLimit() : int.MaxValue;
 
         long regionSteps = CalculateRegionSteps(slices, options.Alignment);
         long processedWork = 0;
@@ -114,12 +115,12 @@ public sealed class PointerScanService
 
                     if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, out var path))
                     {
-                        if (results.Count < options.MaxResults)
+                        if (results.Count < resultLimit)
                         {
                             results.Add(path);
                         }
 
-                        if (results.Count >= options.MaxResults)
+                        if (results.Count >= resultLimit)
                         {
                             Volatile.Write(ref limitReached, 1);
                         }
@@ -439,3 +440,4 @@ public sealed class PointerScanService
 
     private readonly record struct ScanSlice(ulong Start, ulong End);
 }
+

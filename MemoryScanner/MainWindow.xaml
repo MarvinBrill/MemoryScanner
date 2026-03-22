@@ -6,234 +6,285 @@
         mc:Ignorable="d"
         Title="MemoryScanner" Height="760" Width="1320" MinHeight="620" MinWidth="1080">
     <Grid Background="#FF1E1E1E">
-        <Grid.ColumnDefinitions>
-            <ColumnDefinition Width="2*"/>
-            <ColumnDefinition Width="3*"/>
-        </Grid.ColumnDefinitions>
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+        </Grid.RowDefinitions>
 
-        <Border Grid.Column="0" Margin="8" Padding="10" Background="#FF2B2B2B" BorderBrush="#FF3D3D3D" BorderThickness="1" CornerRadius="4">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+        <Menu Grid.Row="0" Background="#FF2B2B2B">
+            <Menu.Resources>
+                <Style TargetType="{x:Type MenuItem}">
+                    <Setter Property="Foreground" Value="Black"/>
+                </Style>
+                <Style x:Key="TopLevelMenuItemStyle" TargetType="{x:Type MenuItem}" BasedOn="{StaticResource {x:Type MenuItem}}">
+                    <Setter Property="Foreground" Value="#FFF0F0F0"/>
+                </Style>
+            </Menu.Resources>
+            <MenuItem Header="_File" Style="{StaticResource TopLevelMenuItemStyle}">
+                <MenuItem Header="_Load..." Click="MenuLoadWatchList_OnClick"/>
+                <Separator/>
+                <MenuItem Header="_Save" Click="MenuSaveWatchList_OnClick"/>
+                <MenuItem Header="Save _As..." Click="MenuSaveWatchListAs_OnClick"/>
+                <Separator/>
+                <MenuItem Header="E_xit" Click="MenuExit_OnClick"/>
+            </MenuItem>
+            <MenuItem Header="_Options" Style="{StaticResource TopLevelMenuItemStyle}">
+                <MenuItem Header="Scan Options..." Click="ScanOptions_OnClick"/>
+                <MenuItem Header="Value Update Routine..." Click="ValueUpdateRoutine_OnClick"/>
+            </MenuItem>
+            <MenuItem Header="_Tools" Style="{StaticResource TopLevelMenuItemStyle}">
+                <MenuItem Header="Pointer Scanner" Click="OpenPointerScanner_OnClick"/>
+            </MenuItem>
+            <MenuItem Header="_Help" Style="{StaticResource TopLevelMenuItemStyle}">
+                <MenuItem Header="About MemoryScanner" Click="MenuAbout_OnClick"/>
+            </MenuItem>
+        </Menu>
 
-                                <Grid Grid.Row="0" Margin="0,0,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                    </Grid.ColumnDefinitions>
+        <Grid Grid.Row="1">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="2*"/>
+                <ColumnDefinition Width="3*"/>
+            </Grid.ColumnDefinitions>
 
-                    <Button Grid.Column="0" Content="Prozess auswaehlen" Width="150" Height="30" Margin="0,0,8,0" Click="SelectProcess_OnClick"/>
+            <Border Grid.Column="0" Margin="8" Padding="10" Background="#FF2B2B2B" BorderBrush="#FF3D3D3D" BorderThickness="1" CornerRadius="4">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
-                        <Button Content="Save" Width="70" Height="30" Margin="0,0,8,0" Click="SaveWatchList_OnClick"/>
-                        <Button Content="Load" Width="70" Height="30" Margin="0,0,8,0" Click="LoadWatchList_OnClick"/>
-                        <Button Content="Pointer Scanner" Width="120" Height="30" Click="OpenPointerScanner_OnClick"/>
-                    </StackPanel>
+                    <Grid Grid.Row="0" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <Button Grid.Column="0" Content="Select Process" Width="150" Height="30" Margin="0,0,8,0" Click="SelectProcess_OnClick"/>
+                    </Grid>
+
+                    <TextBlock x:Name="ProcessInfoText"
+                               Grid.Row="1"
+                               Margin="0,0,0,8"
+                               Foreground="#FFE6E6E6"
+                               Text="No process selected"/>
+
+                    <DataGrid x:Name="WatchGrid"
+                              Grid.Row="2"
+                              AutoGenerateColumns="False"
+                              SelectionMode="Single"
+                              CanUserAddRows="False"
+                              HeadersVisibility="Column"
+                              Background="#FF242424"
+                              Foreground="#FFF0F0F0"
+                              RowBackground="#FF242424"
+                              AlternatingRowBackground="#FF292929"
+                              BorderThickness="0"
+                              MouseDoubleClick="WatchGrid_OnMouseDoubleClick">
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Foreground" Value="Black"/>
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
+                        <DataGrid.RowStyle>
+                            <Style TargetType="DataGridRow">
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding Status}" Value="Invalid">
+                                        <Setter Property="Foreground" Value="#FFFF7A7A"/>
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </DataGrid.RowStyle>
+                        <DataGrid.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Edit Name..." Click="EditWatchName_OnClick"/>
+                                <MenuItem Header="Edit Address/Pointer..." Click="EditWatchAddressPointer_OnClick"/>
+                                <MenuItem Header="Edit Data Type..." Click="EditWatchDataType_OnClick"/>
+                                <MenuItem Header="Write Value..." Click="WriteValueFromContext_OnClick"/>
+                                <Separator/>
+                                <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
+                                <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromWatch_OnClick"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn x:Name="WatchNameColumn" Header="Name" Binding="{Binding Name}" Width="1.2*" IsReadOnly="True"/>
+                            <DataGridTextColumn x:Name="WatchAddressColumn" Header="Address / Pointer" Binding="{Binding DisplayAddress}" Width="2.8*" IsReadOnly="True">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsProcessBaseDisplay}" Value="True">
+                                                <Setter Property="Foreground" Value="#FF4CD964"/>
+                                            </DataTrigger>
+                                            <DataTrigger Binding="{Binding Status}" Value="Invalid">
+                                                <Setter Property="Foreground" Value="#FFFF7A7A"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn x:Name="WatchTypeColumn" Header="Type" Binding="{Binding DataType}" Width="*" IsReadOnly="True"/>
+                            <DataGridTextColumn x:Name="WatchValueColumn" Header="Value" Binding="{Binding LastValueText}" Width="*" IsReadOnly="True"/>
+                            <DataGridCheckBoxColumn Header="Freeze" Binding="{Binding IsFrozen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
+                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*" IsReadOnly="True"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
+
+                    <Grid Grid.Row="3" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
+                            <Button Width="42" Height="30" Margin="0,0,8,0" Click="AddWatchEntry_OnClick" ToolTip="Add Entry">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE710;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button Width="42" Height="30" Click="RemoveWatchEntry_OnClick" ToolTip="Remove Entry">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE74D;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                        </StackPanel>
+
+                        <Button Grid.Column="1" Content="Write Value" Width="100" Height="30" HorizontalAlignment="Right" Click="WriteValue_OnClick"/>
+                    </Grid>
                 </Grid>
+            </Border>
 
-                <TextBlock x:Name="ProcessInfoText"
-                           Grid.Row="1"
-                           Margin="0,0,0,8"
-                           Foreground="#FFE6E6E6"
-                           Text="No process selected"/>
+            <Border Grid.Column="1" Margin="8" Padding="10" Background="#FF2B2B2B" BorderBrush="#FF3D3D3D" BorderThickness="1" CornerRadius="4">
+                <Grid>
+                    <Grid.RowDefinitions>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="*"/>
+                        <RowDefinition Height="Auto"/>
+                        <RowDefinition Height="Auto"/>
+                    </Grid.RowDefinitions>
 
-                <DataGrid x:Name="WatchGrid"
-                          Grid.Row="2"
-                          AutoGenerateColumns="False"
-                          SelectionMode="Single"
-                          CanUserAddRows="False"
-                          HeadersVisibility="Column"
-                          Background="#FF242424"
-                          Foreground="#FFF0F0F0"
-                          RowBackground="#FF242424"
-                          AlternatingRowBackground="#FF292929"
-                          BorderThickness="0">
-                    <DataGrid.ColumnHeaderStyle>
-                        <Style TargetType="DataGridColumnHeader">
-                            <Setter Property="Foreground" Value="Black"/>
-                        </Style>
-                    </DataGrid.ColumnHeaderStyle>
-                    <DataGrid.RowStyle>
-                        <Style TargetType="DataGridRow">
-                            <Style.Triggers>
-                                <DataTrigger Binding="{Binding Status}" Value="Invalid">
-                                    <Setter Property="Foreground" Value="#FFFF7A7A"/>
-                                </DataTrigger>
-                            </Style.Triggers>
-                        </Style>
-                    </DataGrid.RowStyle>
-                    <DataGrid.ContextMenu>
-                        <ContextMenu>
-                            <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
-                            <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromWatch_OnClick"/>
-                        </ContextMenu>
-                    </DataGrid.ContextMenu>
-                    <DataGrid.Columns>
-                        <DataGridTextColumn Header="Name" Binding="{Binding Name}" Width="1.2*"/>
-                        <DataGridTextColumn Header="Address / Pointer" Binding="{Binding DisplayAddress}" Width="2.8*">
-                            <DataGridTextColumn.ElementStyle>
-                                <Style TargetType="TextBlock">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsProcessBaseDisplay}" Value="True">
-                                            <Setter Property="Foreground" Value="#FF4CD964"/>
-                                        </DataTrigger>
-                                        <DataTrigger Binding="{Binding Status}" Value="Invalid">
-                                            <Setter Property="Foreground" Value="#FFFF7A7A"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </DataGridTextColumn.ElementStyle>
-                        </DataGridTextColumn>
-                        <DataGridTextColumn Header="Type" Binding="{Binding DataType}" Width="*"/>
-                        <DataGridTextColumn Header="Value" Binding="{Binding LastValueText}" Width="*" IsReadOnly="True"/>
-                        <DataGridCheckBoxColumn Header="Freeze" Binding="{Binding IsFrozen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
-                        <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*"/>
-                    </DataGrid.Columns>
-                </DataGrid>
+                    <TextBlock Grid.Row="0" Text="Memory Scan" FontSize="20" FontWeight="SemiBold" Foreground="#FFF0F0F0" Margin="0,0,0,8"/>
 
-                <WrapPanel Grid.Row="3" Margin="0,8,0,0">
-                    <Button Content="Add Entry" Width="100" Height="30" Margin="0,0,8,8" Click="AddWatchEntry_OnClick"/>
-                    <Button Content="Write Value" Width="100" Height="30" Margin="0,0,8,8" Click="WriteValue_OnClick"/>
-                    <Button Content="Remove" Width="90" Height="30" Margin="0,0,8,8" Click="RemoveWatchEntry_OnClick"/>
-                    <Button Content="Refresh Values" Width="110" Height="30" Margin="0,0,8,8" Click="RefreshWatchValues_OnClick"/>
-                </WrapPanel>
-            </Grid>
-        </Border>
+                    <Grid Grid.Row="1" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-        <Border Grid.Column="1" Margin="8" Padding="10" Background="#FF2B2B2B" BorderBrush="#FF3D3D3D" BorderThickness="1" CornerRadius="4">
-            <Grid>
-                <Grid.RowDefinitions>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="Auto"/>
-                    <RowDefinition Height="*"/>
-                    <RowDefinition Height="Auto"/>
-                </Grid.RowDefinitions>
+                        <StackPanel Grid.Column="0" Margin="0,0,8,0">
+                            <TextBlock Text="Data Type" Foreground="#FFE6E6E6"/>
+                            <ComboBox x:Name="ScanTypeBox" Margin="0,4,0,0" Height="28"/>
+                        </StackPanel>
 
-                <TextBlock Grid.Row="0" Text="Memory Scan" FontSize="20" FontWeight="SemiBold" Foreground="#FFF0F0F0" Margin="0,0,0,8"/>
+                        <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                            <TextBlock Text="Condition" Foreground="#FFE6E6E6"/>
+                            <ComboBox x:Name="ScanComparisonBox" Margin="0,4,0,0" Height="28"/>
+                        </StackPanel>
 
-                <Grid Grid.Row="1" Margin="0,0,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                        <StackPanel Grid.Column="2">
+                            <TextBlock Text="Value" Foreground="#FFE6E6E6"/>
+                            <TextBox x:Name="ScanValueText" Margin="0,4,0,0" Height="28" VerticalContentAlignment="Center"/>
+                        </StackPanel>
 
-                    <StackPanel Grid.Column="0" Margin="0,0,8,0">
-                        <TextBlock Text="Data Type" Foreground="#FFE6E6E6"/>
-                        <ComboBox x:Name="ScanTypeBox" Margin="0,4,0,0"/>
-                    </StackPanel>
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,18,8,0" x:Name="ScanButtonsPanel">
+                            <Button x:Name="FirstScanButton" Width="42" Height="30" Margin="0,0,8,0" Click="FirstScan_OnClick" ToolTip="First Scan">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="16" Text="&#xE768;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="NextScanButton" Width="42" Height="30" Margin="0,0,8,0" Click="NextScan_OnClick" ToolTip="Next Scan">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="16" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                            <Button x:Name="ResetScanButton" Width="42" Height="30" Click="ResetScan_OnClick" ToolTip="Reset Scan">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE711;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                        </StackPanel>
 
-                    <StackPanel Grid.Column="1" Margin="0,0,8,0">
-                        <TextBlock Text="Condition" Foreground="#FFE6E6E6"/>
-                        <ComboBox x:Name="ScanComparisonBox" Margin="0,4,0,0"/>
-                    </StackPanel>
+                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,18,8,0" x:Name="CancelScanPanel" Visibility="Collapsed">
+                            <Button x:Name="CancelScanButton" Content="Cancel Scan" Width="120" Height="30" Click="CancelScan_OnClick"/>
+                        </StackPanel>
 
-                    <StackPanel Grid.Column="2" Margin="0,0,8,0">
-                        <TextBlock Text="Value" Foreground="#FFE6E6E6"/>
-                        <TextBox x:Name="ScanValueText" Margin="0,4,0,0"/>
-                    </StackPanel>
+                        <Button Grid.Column="4" x:Name="ScanOptionsButton" Content="Scan Options" Width="110" Height="30" Margin="0,18,0,0" Click="ScanOptions_OnClick"/>
+                    </Grid>
 
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="0,18,8,0" x:Name="ScanButtonsPanel">
-                        <Button x:Name="FirstScanButton" Content="First Scan" Width="95" Height="30" Margin="0,0,8,0" Click="FirstScan_OnClick"/>
-                        <Button x:Name="NextScanButton" Content="Next Scan" Width="95" Height="30" Margin="0,0,8,0" Click="NextScan_OnClick"/>
-                        <Button x:Name="ResetScanButton" Content="Reset" Width="80" Height="30" Click="ResetScan_OnClick"/>
-                    </StackPanel>
+                    <Grid Grid.Row="2" Margin="0,0,0,8">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                    <StackPanel Grid.Column="3" Orientation="Horizontal" Margin="0,18,8,0" x:Name="CancelScanPanel" Visibility="Collapsed">
-                        <Button x:Name="CancelScanButton" Content="Cancel Scan" Width="120" Height="30" Click="CancelScan_OnClick"/>
-                    </StackPanel>
+                        <ProgressBar x:Name="ScanProgressBar" Grid.Column="0" Height="20" Minimum="0" Maximum="100" Value="0"/>
+                        <TextBlock x:Name="ScanProgressText" Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#FFE6E6E6" Text="Idle"/>
+                    </Grid>
 
-                    <Button Grid.Column="4" x:Name="ScanOptionsButton" Content="Scan Options" Width="110" Height="30" Margin="0,18,0,0" Click="ScanOptions_OnClick"/>
-                </Grid>
+                    <DataGrid x:Name="ScanResultGrid"
+                              Grid.Row="3"
+                              AutoGenerateColumns="False"
+                              SelectionMode="Extended"
+                              IsReadOnly="True"
+                              Background="#FF242424"
+                              Foreground="#FFF0F0F0"
+                              RowBackground="#FF242424"
+                              AlternatingRowBackground="#FF292929"
+                              BorderThickness="0"
+                              MouseDoubleClick="ScanResultGrid_OnMouseDoubleClick">
+                        <DataGrid.ColumnHeaderStyle>
+                            <Style TargetType="DataGridColumnHeader">
+                                <Setter Property="Foreground" Value="Black"/>
+                            </Style>
+                        </DataGrid.ColumnHeaderStyle>
+                        <DataGrid.ContextMenu>
+                            <ContextMenu>
+                                <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromScanResult_OnClick"/>
+                            </ContextMenu>
+                        </DataGrid.ContextMenu>
+                        <DataGrid.Columns>
+                            <DataGridTextColumn Header="Address" Binding="{Binding DisplayAddress}" Width="2.4*">
+                                <DataGridTextColumn.ElementStyle>
+                                    <Style TargetType="TextBlock">
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsProcessBaseDisplay}" Value="True">
+                                                <Setter Property="Foreground" Value="#FF4CD964"/>
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </DataGridTextColumn.ElementStyle>
+                            </DataGridTextColumn>
+                            <DataGridTextColumn Header="Value" Binding="{Binding ValueText}" Width="1.2*"/>
+                            <DataGridTextColumn Header="Raw Address" Binding="{Binding AddressHex}" Width="1.6*"/>
+                            <DataGridTextColumn Header="Type" Binding="{Binding DataType}" Width="*" IsReadOnly="True"/>
+                        </DataGrid.Columns>
+                    </DataGrid>
 
-                <Grid Grid.Row="2" Margin="0,0,0,8">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
+                    <Grid Grid.Row="4" Margin="0,8,0,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
 
-                    <ProgressBar x:Name="ScanProgressBar" Grid.Column="0" Height="20" Minimum="0" Maximum="100" Value="0"/>
-                    <TextBlock x:Name="ScanProgressText" Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#FFE6E6E6" Text="Idle"/>
-                </Grid>
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
+                            <TextBlock Text="Page Size:" Foreground="#FFE6E6E6" VerticalAlignment="Center" Margin="0,0,6,0"/>
+                            <ComboBox x:Name="PageSizeBox" Width="120" Margin="0,0,10,0" SelectionChanged="PageSizeBox_OnSelectionChanged"/>
+                            <TextBlock x:Name="ShowingInfoText" Foreground="#FFE6E6E6" VerticalAlignment="Center" Text="Showing 0 of 0"/>
+                        </StackPanel>
 
-                <DataGrid x:Name="ScanResultGrid"
-                          Grid.Row="3"
-                          AutoGenerateColumns="False"
-                          SelectionMode="Extended"
-                          IsReadOnly="True"
-                          Background="#FF242424"
-                          Foreground="#FFF0F0F0"
-                          RowBackground="#FF242424"
-                          AlternatingRowBackground="#FF292929"
-                          BorderThickness="0"
-                          MouseDoubleClick="ScanResultGrid_OnMouseDoubleClick">
-                    <DataGrid.ColumnHeaderStyle>
-                        <Style TargetType="DataGridColumnHeader">
-                            <Setter Property="Foreground" Value="Black"/>
-                        </Style>
-                    </DataGrid.ColumnHeaderStyle>
-                    <DataGrid.ContextMenu>
-                        <ContextMenu>
-                            <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromScanResult_OnClick"/>
-                        </ContextMenu>
-                    </DataGrid.ContextMenu>
-                    <DataGrid.Columns>
-                        <DataGridTextColumn Header="Address" Binding="{Binding DisplayAddress}" Width="2.4*">
-                            <DataGridTextColumn.ElementStyle>
-                                <Style TargetType="TextBlock">
-                                    <Style.Triggers>
-                                        <DataTrigger Binding="{Binding IsProcessBaseDisplay}" Value="True">
-                                            <Setter Property="Foreground" Value="#FF4CD964"/>
-                                        </DataTrigger>
-                                    </Style.Triggers>
-                                </Style>
-                            </DataGridTextColumn.ElementStyle>
-                        </DataGridTextColumn>
-                        <DataGridTextColumn Header="Value" Binding="{Binding ValueText}" Width="1.2*"/>
-                        <DataGridTextColumn Header="Raw Address" Binding="{Binding AddressHex}" Width="1.6*"/>
-                        <DataGridTextColumn Header="Type" Binding="{Binding DataType}" Width="*"/>
-                    </DataGrid.Columns>
-                </DataGrid>
+                        <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
+                            <Button x:Name="PrevPageButton" Width="38" Height="30" Margin="0,0,8,0" Click="PrevPage_OnClick" ToolTip="Previous Page">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72B;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                            <TextBlock x:Name="PageInfoText" Foreground="#FFE6E6E6" VerticalAlignment="Center" Margin="0,0,8,0" Text="0/1"/>
+                            <Button x:Name="NextPageButton" Width="38" Height="30" Click="NextPage_OnClick" ToolTip="Next Page">
+                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                            </Button>
+                        </StackPanel>
+                    </Grid>
 
-                <Grid Grid.Row="4" Margin="0,8,0,0">
-                    <Grid.ColumnDefinitions>
-                        <ColumnDefinition Width="Auto"/>
-                        <ColumnDefinition Width="*"/>
-                        <ColumnDefinition Width="Auto"/>
-                    </Grid.ColumnDefinitions>
-
-                    <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
-                        <TextBlock Text="Result Update (ms):" Foreground="#FFE6E6E6" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                        <TextBox x:Name="ResultRefreshMsText" Width="90" Text="500" Margin="0,0,6,0"/>
-                        <Button Content="Apply" Width="80" Height="30" Click="ApplyResultRefresh_OnClick"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Center" VerticalAlignment="Center">
-                        <TextBlock Text="Page Size:" Foreground="#FFE6E6E6" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                        <ComboBox x:Name="PageSizeBox" Width="120" Margin="0,0,8,0" SelectionChanged="PageSizeBox_OnSelectionChanged"/>
-                        <Button x:Name="PrevPageButton" Content="Prev" Width="70" Height="30" Margin="0,0,6,0" Click="PrevPage_OnClick"/>
-                        <Button x:Name="NextPageButton" Content="Next" Width="70" Height="30" Margin="0,0,8,0" Click="NextPage_OnClick"/>
-                        <TextBlock x:Name="PageInfoText" Foreground="#FFE6E6E6" VerticalAlignment="Center" Text="Page 1/1"/>
-                    </StackPanel>
-
-                    <StackPanel Grid.Column="2" Orientation="Horizontal" HorizontalAlignment="Right">
+                    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
                         <Button Content="Take Selected" Width="120" Height="30" Margin="0,0,8,0" Click="TakeSelectedScanResult_OnClick"/>
                         <Button Content="Take All" Width="100" Height="30" Click="TakeAllScanResults_OnClick"/>
                     </StackPanel>
                 </Grid>
-            </Grid>
-        </Border>
+            </Border>
+        </Grid>
     </Grid>
 </Window>
-
-
-
 
 

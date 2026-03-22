@@ -4,9 +4,11 @@ using MemoryScanner.Windows;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Media;
 using System.Windows.Threading;
 
 namespace MemoryScanner;
@@ -29,10 +31,11 @@ public partial class MainWindow : Window
     private CancellationTokenSource? _scanCts;
     private bool _isScanRunning;
     private ScanExecutionOptions _scanOptions = new();
-    private int _scanResultPageSize = 100;
+    private int _scanResultPageSize = ShowAllPageSize;
     private int _scanResultPageIndex;
     private bool _resumeWatchRefreshAfterScan;
     private bool _resumeScanResultRefreshAfterScan;
+    private string? _currentWatchListFilePath;
 
     public MainWindow()
     {
@@ -47,27 +50,26 @@ public partial class MainWindow : Window
         WatchGrid.ItemsSource = _watchEntries;
         ScanResultGrid.ItemsSource = _scanResults;
 
-        ScanTypeBox.ItemsSource = Enum.GetValues<MemoryDataType>();
+        ScanTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
         ScanTypeBox.SelectedItem = MemoryDataType.Int32;
 
         ScanComparisonBox.ItemsSource = Enum.GetValues<ScanComparison>();
         ScanComparisonBox.SelectedItem = ScanComparison.Equal;
-        PageSizeBox.ItemsSource = new[] { "25", "50", "100", "500", "Show all entries" };
-        PageSizeBox.SelectedIndex = 2;
+        PageSizeBox.ItemsSource = new[] { "25", "50", "100", "500", "All Entries" };
+        PageSizeBox.SelectedIndex = 4;
 
-        _refreshTimer = new DispatcherTimer
-        {
-            Interval = TimeSpan.FromMilliseconds(250)
-        };
+        _refreshTimer = new DispatcherTimer();
         _refreshTimer.Tick += RefreshTimer_OnTick;
-        _refreshTimer.Start();
 
         _scanResultRefreshTimer = new DispatcherTimer();
         _scanResultRefreshTimer.Tick += ScanResultRefreshTimer_OnTick;
-        ApplyScanResultRefreshInterval(showMessageOnError: false);
+
+        UiUpdateRoutineSettings.ValueRefreshIntervalChanged += OnGlobalValueRefreshIntervalChanged;
+        ApplyGlobalValueRefreshInterval(UiUpdateRoutineSettings.ValueRefreshIntervalMs);
 
         UpdateScanResultPageUi();
         SetScanIdleUi();
+        UpdateWindowTitle();
     }
 
     private void SelectProcess_OnClick(object sender, RoutedEventArgs e)
@@ -92,7 +94,7 @@ public partial class MainWindow : Window
 
     private void AddWatchEntry_OnClick(object sender, RoutedEventArgs e)
     {
-        var dialog = new AddWatchEntryWindow { Owner = this };
+        var dialog = new AddWatchEntryWindow(processName: GetAttachedProcessName(), modules: GetAttachedModuleSnapshot()) { Owner = this };
         if (dialog.ShowDialog() != true || dialog.CreatedEntry is null)
         {
             return;
@@ -106,6 +108,45 @@ public partial class MainWindow : Window
         if (WatchGrid.SelectedItem is WatchEntry entry)
         {
             _watchEntries.Remove(entry);
+        }
+    }
+
+    private void WatchGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        var source = e.OriginalSource as DependencyObject;
+        var cell = FindVisualParent<DataGridCell>(source);
+        if (cell?.Column is null || cell.DataContext is not WatchEntry entry)
+        {
+            return;
+        }
+
+        WatchGrid.SelectedItem = entry;
+
+        if (ReferenceEquals(cell.Column, WatchNameColumn))
+        {
+            EditWatchName_OnClick(sender, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+
+        if (ReferenceEquals(cell.Column, WatchAddressColumn))
+        {
+            EditWatchAddressPointer_OnClick(sender, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+
+        if (ReferenceEquals(cell.Column, WatchTypeColumn))
+        {
+            EditWatchDataType_OnClick(sender, new RoutedEventArgs());
+            e.Handled = true;
+            return;
+        }
+
+        if (ReferenceEquals(cell.Column, WatchValueColumn))
+        {
+            WriteValue_OnClick(sender, new RoutedEventArgs());
+            e.Handled = true;
         }
     }
 
@@ -154,6 +195,164 @@ public partial class MainWindow : Window
         entry.LastValueText = input;
         entry.FreezeValueText = input;
         entry.Status = "Valid";
+    }
+
+    private void WriteValueFromContext_OnClick(object sender, RoutedEventArgs e)
+    {
+        WriteValue_OnClick(sender, e);
+    }
+
+    private void EditWatchName_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (WatchGrid.SelectedItem is not WatchEntry entry)
+        {
+            return;
+        }
+
+        var updated = PromptForText("Edit Name", "Entry name:", entry.Name);
+        if (updated is null)
+        {
+            return;
+        }
+
+        entry.Name = string.IsNullOrWhiteSpace(updated) ? "Entry" : updated.Trim();
+        WatchGrid.Items.Refresh();
+    }
+
+    private void EditWatchAddressPointer_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (WatchGrid.SelectedItem is not WatchEntry entry)
+        {
+            return;
+        }
+
+        var dialog = new AddWatchEntryWindow(entry, addressOnlyEditMode: true, processName: GetAttachedProcessName(), modules: GetAttachedModuleSnapshot()) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.CreatedEntry is null)
+        {
+            return;
+        }
+
+        var edited = dialog.CreatedEntry;
+        entry.Kind = edited.Kind;
+        entry.DirectAddress = edited.DirectAddress;
+        entry.PointerBaseAddress = edited.PointerBaseAddress;
+        entry.PointerBaseModuleName = edited.PointerBaseModuleName;
+        entry.PointerBaseModuleOffset = edited.PointerBaseModuleOffset;
+        entry.Offsets = new ObservableCollection<int>(edited.Offsets);
+        entry.Status = "Unknown";
+
+        UpdateWatchDisplayForCurrentState(entry);
+        WatchGrid.Items.Refresh();
+
+        if (_memoryAccessor.IsAttached)
+        {
+            RefreshWatchValues();
+        }
+    }
+
+    private void EditWatchDataType_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (WatchGrid.SelectedItem is not WatchEntry entry)
+        {
+            return;
+        }
+
+        var selectedType = PromptForDataType(entry.DataType);
+        if (selectedType is null)
+        {
+            return;
+        }
+
+        entry.DataType = selectedType.Value;
+        entry.Status = "Unknown";
+        WatchGrid.Items.Refresh();
+
+        if (_memoryAccessor.IsAttached)
+        {
+            RefreshWatchValues();
+        }
+    }
+
+    private void UpdateWatchDisplayForCurrentState(WatchEntry entry)
+    {
+        if (entry.Kind == WatchEntryKind.DirectAddress && _memoryAccessor.IsAttached)
+        {
+            TryRebaseDirectEntryFromModuleReference(entry);
+            CaptureDirectEntryModuleReference(entry);
+        }
+
+        NormalizeProcessBaseEntryKind(entry);
+
+        if (entry.Kind == WatchEntryKind.DirectAddress)
+        {
+            if (_memoryAccessor.IsAttached)
+            {
+                entry.DisplayAddress = _memoryAccessor.FormatAddress(entry.DirectAddress);
+            }
+            else
+            {
+                entry.DisplayAddress = string.IsNullOrWhiteSpace(entry.PointerBaseModuleName)
+                    ? $"0x{entry.DirectAddress:X}"
+                    : $"{entry.PointerBaseModuleName}+0x{entry.PointerBaseModuleOffset:X}";
+            }
+
+            entry.IsProcessBaseDisplay = IsProcessBaseAddressText(entry.DisplayAddress);
+            return;
+        }
+
+        if (_memoryAccessor.IsAttached)
+        {
+            TryRebasePointerEntryFromModuleReference(entry);
+        }
+
+        var baseLabel = _memoryAccessor.IsAttached
+            ? _memoryAccessor.FormatAddress(entry.PointerBaseAddress)
+            : (string.IsNullOrWhiteSpace(entry.PointerBaseModuleName)
+                ? $"0x{entry.PointerBaseAddress:X}"
+                : $"{entry.PointerBaseModuleName}+0x{entry.PointerBaseModuleOffset:X}");
+
+        entry.DisplayAddress = BuildPointerDisplayAddress(baseLabel, entry.Offsets);
+        entry.IsProcessBaseDisplay = IsProcessBaseAddressText(entry.DisplayAddress);
+    }
+
+    private static string BuildPointerDisplayAddress(string baseLabel, IEnumerable<int> offsets)
+    {
+        var offsetText = AddressParser.OffsetsToText(offsets);
+        if (string.IsNullOrWhiteSpace(offsetText))
+        {
+            return baseLabel;
+        }
+
+        return $"{baseLabel} [{offsetText}]";
+    }
+
+    private void NormalizeProcessBaseEntryKind(WatchEntry entry)
+    {
+        if (entry.Kind != WatchEntryKind.DirectAddress)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.PointerBaseModuleName))
+        {
+            return;
+        }
+
+        entry.Kind = WatchEntryKind.PointerChain;
+        entry.PointerBaseAddress = entry.DirectAddress;
+        entry.Offsets ??= new ObservableCollection<int>();
+    }
+
+    private string? GetAttachedProcessName()
+    {
+        return _memoryAccessor.IsAttached ? _memoryAccessor.Process.ProcessName : null;
+    }
+
+    private IReadOnlyList<ModuleRange>? GetAttachedModuleSnapshot()
+    {
+        return _memoryAccessor.IsAttached
+            ? _memoryAccessor.Modules.ToList()
+            : null;
     }
 
     private async void FirstScan_OnClick(object sender, RoutedEventArgs e)
@@ -205,29 +404,57 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ApplyResultRefresh_OnClick(object sender, RoutedEventArgs e)
+    private void ValueUpdateRoutine_OnClick(object sender, RoutedEventArgs e)
     {
-        ApplyScanResultRefreshInterval(showMessageOnError: true);
+        var current = UiUpdateRoutineSettings.ValueRefreshIntervalMs.ToString();
+        var input = PromptForText(
+            "Value Update Routine",
+            "Refresh interval for all value lists in milliseconds (>= 1):",
+            current);
+
+        if (input is null)
+        {
+            return;
+        }
+
+        if (!int.TryParse(input.Trim(), out var milliseconds) || !UiUpdateRoutineSettings.TrySetValueRefreshInterval(milliseconds))
+        {
+            MessageBox.Show(this, "Please enter a valid integer >= 1.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!_isScanRunning)
+        {
+            UpdateIdleProgressText();
+        }
     }
 
-    private void ApplyScanResultRefreshInterval(bool showMessageOnError)
+    private void OnGlobalValueRefreshIntervalChanged(object? sender, int milliseconds)
     {
-        if (!int.TryParse(ResultRefreshMsText.Text, out var ms) || ms < 0)
+        Dispatcher.Invoke(() =>
         {
-            if (showMessageOnError)
+            ApplyGlobalValueRefreshInterval(milliseconds);
+            if (!_isScanRunning)
             {
-                MessageBox.Show(this, "Result update interval must be 0 or a positive number.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                UpdateIdleProgressText();
             }
-            return;
-        }
+        });
+    }
 
-        if (ms == 0)
+    private void ApplyGlobalValueRefreshInterval(int milliseconds)
+    {
+        var interval = TimeSpan.FromMilliseconds(milliseconds);
+        _refreshTimer.Interval = interval;
+        _scanResultRefreshTimer.Interval = interval;
+
+        if (_isScanRunning)
         {
-            _scanResultRefreshTimer.Stop();
             return;
         }
 
-        _scanResultRefreshTimer.Interval = TimeSpan.FromMilliseconds(ms);
+        _refreshTimer.Stop();
+        _scanResultRefreshTimer.Stop();
+        _refreshTimer.Start();
         _scanResultRefreshTimer.Start();
     }
 
@@ -367,10 +594,19 @@ public partial class MainWindow : Window
         UpdateIdleProgressText();
     }
 
+    private void UpdateWindowTitle()
+    {
+        var profileSuffix = string.IsNullOrWhiteSpace(_currentWatchListFilePath)
+            ? string.Empty
+            : $" - {Path.GetFileName(_currentWatchListFilePath)}";
+
+        Title = $"MemoryScanner{profileSuffix}";
+    }
     private void UpdateIdleProgressText()
     {
         var limitText = _scanOptions.UseResultLimit ? _scanOptions.ResultLimit.ToString() : "off";
-        ScanProgressText.Text = $"Idle | Options: {_scanOptions.DepthProfile}, Threads {_scanOptions.ThreadCount}, Limit {limitText}";
+        var updateMsText = UiUpdateRoutineSettings.ValueRefreshIntervalMs;
+        ScanProgressText.Text = $"Idle | Options: {_scanOptions.DepthProfile}, Threads {_scanOptions.ThreadCount}, Limit {limitText}, Update {updateMsText} ms";
     }
 
     private void ScanResultGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -475,7 +711,7 @@ public partial class MainWindow : Window
 
         foreach (var path in pointerWindow.SelectedPaths)
         {
-            var dialog = new AddWatchEntryWindow(path, initialType) { Owner = this };
+            var dialog = new AddWatchEntryWindow(path, initialType, processName: GetAttachedProcessName(), modules: GetAttachedModuleSnapshot()) { Owner = this };
             if (dialog.ShowDialog() == true && dialog.CreatedEntry is not null)
             {
                 AddWatchEntry(dialog.CreatedEntry);
@@ -535,24 +771,72 @@ public partial class MainWindow : Window
         }
     }
 
+    private void MenuLoadWatchList_OnClick(object sender, RoutedEventArgs e)
+    {
+        LoadWatchList_OnClick(sender, e);
+    }
+
+    private void MenuSaveWatchList_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (string.IsNullOrWhiteSpace(_currentWatchListFilePath))
+        {
+            SaveWatchListAs();
+            return;
+        }
+
+        SaveWatchListToPath(_currentWatchListFilePath);
+    }
+
+    private void MenuSaveWatchListAs_OnClick(object sender, RoutedEventArgs e)
+    {
+        SaveWatchListAs();
+    }
+
+    private void MenuExit_OnClick(object sender, RoutedEventArgs e)
+    {
+        Close();
+    }
+
+    private void MenuAbout_OnClick(object sender, RoutedEventArgs e)
+    {
+        MessageBox.Show(this,
+            "MemoryScanner\nLightweight RAM scanner with address and pointer scan.",
+            "About MemoryScanner",
+            MessageBoxButton.OK,
+            MessageBoxImage.Information);
+    }
     private void SaveWatchList_OnClick(object sender, RoutedEventArgs e)
+    {
+        SaveWatchListAs();
+    }
+
+    private bool SaveWatchListAs()
     {
         var saveDialog = new SaveFileDialog
         {
             Filter = "MemoryScanner Profile (*.json)|*.json|All files (*.*)|*.*",
-            DefaultExt = ".json"
+            DefaultExt = ".json",
+            FileName = string.IsNullOrWhiteSpace(_currentWatchListFilePath) ? string.Empty : Path.GetFileName(_currentWatchListFilePath)
         };
 
         if (saveDialog.ShowDialog(this) != true)
         {
-            return;
+            return false;
         }
 
+        SaveWatchListToPath(saveDialog.FileName);
+        return true;
+    }
+
+    private void SaveWatchListToPath(string filePath)
+    {
         var processName = _memoryAccessor.IsAttached ? _memoryAccessor.Process.ProcessName : string.Empty;
 
         try
         {
-            _profileStorageService.Save(saveDialog.FileName, processName, _watchEntries);
+            _profileStorageService.Save(filePath, processName, _watchEntries);
+            _currentWatchListFilePath = filePath;
+            UpdateWindowTitle();
         }
         catch (Exception ex)
         {
@@ -580,6 +864,9 @@ public partial class MainWindow : Window
             {
                 AddWatchEntry(entry, refreshNow: false);
             }
+
+            _currentWatchListFilePath = openDialog.FileName;
+            UpdateWindowTitle();
             RefreshWatchValues();
         }
         catch (Exception ex)
@@ -662,21 +949,7 @@ public partial class MainWindow : Window
             entry.Id = Guid.NewGuid();
         }
 
-        if (entry.Kind == WatchEntryKind.DirectAddress)
-        {
-            entry.DisplayAddress = _memoryAccessor.IsAttached ? _memoryAccessor.FormatAddress(entry.DirectAddress) : $"0x{entry.DirectAddress:X}";
-        }
-        else
-        {
-            var baseLabel = _memoryAccessor.IsAttached
-                ? _memoryAccessor.FormatAddress(entry.PointerBaseAddress)
-                : (string.IsNullOrWhiteSpace(entry.PointerBaseModuleName)
-                    ? $"0x{entry.PointerBaseAddress:X}"
-                    : $"{entry.PointerBaseModuleName}+0x{entry.PointerBaseModuleOffset:X}");
-            entry.DisplayAddress = $"{baseLabel} [{AddressParser.OffsetsToText(entry.Offsets)}]";
-        }
-
-        entry.IsProcessBaseDisplay = IsProcessBaseAddressText(entry.DisplayAddress);
+        UpdateWatchDisplayForCurrentState(entry);
 
         if (string.IsNullOrWhiteSpace(entry.FreezeValueText))
         {
@@ -696,17 +969,71 @@ public partial class MainWindow : Window
     {
         foreach (var entry in _watchEntries)
         {
-            if (entry.Kind == WatchEntryKind.DirectAddress)
-            {
-                entry.DisplayAddress = _memoryAccessor.FormatAddress(entry.DirectAddress);
-            }
-            else
-            {
-                entry.DisplayAddress = $"{_memoryAccessor.FormatAddress(entry.PointerBaseAddress)} [{AddressParser.OffsetsToText(entry.Offsets)}]";
-            }
-
-            entry.IsProcessBaseDisplay = IsProcessBaseAddressText(entry.DisplayAddress);
+            UpdateWatchDisplayForCurrentState(entry);
         }
+    }
+
+    private void CaptureDirectEntryModuleReference(WatchEntry entry)
+    {
+        if (!_memoryAccessor.IsAttached || entry.Kind != WatchEntryKind.DirectAddress)
+        {
+            return;
+        }
+
+        var module = _memoryAccessor.Modules.FirstOrDefault(m => m.Contains(entry.DirectAddress));
+        if (module is null)
+        {
+            return;
+        }
+
+        entry.PointerBaseModuleName = module.Name;
+        entry.PointerBaseModuleOffset = entry.DirectAddress - module.Base;
+    }
+
+    private void TryRebaseDirectEntryFromModuleReference(WatchEntry entry)
+    {
+        if (!_memoryAccessor.IsAttached || entry.Kind != WatchEntryKind.DirectAddress)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.PointerBaseModuleName))
+        {
+            return;
+        }
+
+        var moduleByName = _memoryAccessor.Modules.FirstOrDefault(m =>
+            string.Equals(m.Name, entry.PointerBaseModuleName, StringComparison.OrdinalIgnoreCase));
+
+        if (moduleByName is null)
+        {
+            return;
+        }
+
+        entry.DirectAddress = moduleByName.Base + entry.PointerBaseModuleOffset;
+    }
+
+    private void TryRebasePointerEntryFromModuleReference(WatchEntry entry)
+    {
+        if (!_memoryAccessor.IsAttached || entry.Kind != WatchEntryKind.PointerChain)
+        {
+            return;
+        }
+
+        if (string.IsNullOrWhiteSpace(entry.PointerBaseModuleName))
+        {
+            return;
+        }
+
+        var moduleByName = _memoryAccessor.Modules.FirstOrDefault(m =>
+            string.Equals(m.Name, entry.PointerBaseModuleName, StringComparison.OrdinalIgnoreCase));
+
+        if (moduleByName is null)
+        {
+            return;
+        }
+
+        entry.PointerBaseAddress = moduleByName.Base + entry.PointerBaseModuleOffset;
     }
 
     private bool TryGetScanInput(out MemoryDataType dataType, out ScanComparison comparison, out string valueText)
@@ -762,7 +1089,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        _scanResultPageSize = selected.StartsWith("Show all", StringComparison.OrdinalIgnoreCase)
+        _scanResultPageSize = selected.Contains("all", StringComparison.OrdinalIgnoreCase)
             ? ShowAllPageSize
             : int.TryParse(selected, out var parsed) ? Math.Max(1, parsed) : 100;
 
@@ -845,7 +1172,8 @@ public partial class MainWindow : Window
     {
         var pageCount = GetScanResultPageCount();
         var current = _allScanResults.Count == 0 ? 0 : _scanResultPageIndex + 1;
-        PageInfoText.Text = $"Page {current}/{pageCount} | Showing {_scanResults.Count} of {_allScanResults.Count}";
+        PageInfoText.Text = $"{current}/{pageCount}";
+        ShowingInfoText.Text = $"Showing {_scanResults.Count} of {_allScanResults.Count}";
 
         var pagingActive = _allScanResults.Count > 0 && _scanResultPageSize != ShowAllPageSize;
         PrevPageButton.IsEnabled = pagingActive && _scanResultPageIndex > 0;
@@ -876,6 +1204,21 @@ public partial class MainWindow : Window
     private static bool IsOnlyCancellation(AggregateException ex)
     {
         return ex.Flatten().InnerExceptions.All(inner => inner is OperationCanceledException);
+    }
+
+    private static T? FindVisualParent<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T typed)
+            {
+                return typed;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
     }
 
     private string? PromptForText(string title, string label, string defaultValue)
@@ -921,10 +1264,57 @@ public partial class MainWindow : Window
         return window.ShowDialog() == true ? input.Text : null;
     }
 
+    private MemoryDataType? PromptForDataType(MemoryDataType current)
+    {
+        var window = new Window
+        {
+            Title = "Edit Data Type",
+            Width = 360,
+            Height = 170,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this,
+            ResizeMode = ResizeMode.NoResize
+        };
+
+        var root = new Grid { Margin = new Thickness(10) };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var text = new TextBlock { Text = "Select data type:", Margin = new Thickness(0, 0, 0, 8) };
+        Grid.SetRow(text, 0);
+        root.Children.Add(text);
+
+        var combo = new ComboBox { Margin = new Thickness(0, 0, 0, 12), ItemsSource = MemoryDataTypeUiOrder.Ordered };
+        combo.SelectedItem = current;
+        Grid.SetRow(combo, 1);
+        root.Children.Add(combo);
+
+        var buttons = new StackPanel { Orientation = Orientation.Horizontal, HorizontalAlignment = HorizontalAlignment.Right };
+        var ok = new Button { Content = "Apply", Width = 90, Height = 30, Margin = new Thickness(0, 0, 8, 0), IsDefault = true };
+        var cancel = new Button { Content = "Cancel", Width = 90, Height = 30, IsCancel = true };
+
+        ok.Click += (_, _) => window.DialogResult = true;
+        cancel.Click += (_, _) => window.DialogResult = false;
+
+        buttons.Children.Add(ok);
+        buttons.Children.Add(cancel);
+
+        Grid.SetRow(buttons, 2);
+        root.Children.Add(buttons);
+
+        window.Content = root;
+
+        return window.ShowDialog() == true && combo.SelectedItem is MemoryDataType selected
+            ? selected
+            : null;
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         _scanCts?.Cancel();
         _scanCts?.Dispose();
+        UiUpdateRoutineSettings.ValueRefreshIntervalChanged -= OnGlobalValueRefreshIntervalChanged;
         _refreshTimer.Stop();
         _scanResultRefreshTimer.Stop();
         _memoryAccessor.Detach();
@@ -969,6 +1359,23 @@ public partial class MainWindow : Window
         }
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

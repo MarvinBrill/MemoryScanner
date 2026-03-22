@@ -100,6 +100,7 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
             value = dataType switch
             {
                 MemoryDataType.Byte => _helper.ReadMemory<byte>(address),
+                MemoryDataType.Int16 => _helper.ReadMemory<short>(address),
                 MemoryDataType.Int32 => _helper.ReadMemory<int>(address),
                 MemoryDataType.Int64 => _helper.ReadMemory<long>(address),
                 MemoryDataType.Float => _helper.ReadMemory<float>(address),
@@ -123,6 +124,7 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
             return dataType switch
             {
                 MemoryDataType.Byte => _helper.WriteMemory(address, Convert.ToByte(value)),
+                MemoryDataType.Int16 => _helper.WriteMemory(address, Convert.ToInt16(value)),
                 MemoryDataType.Int32 => _helper.WriteMemory(address, Convert.ToInt32(value)),
                 MemoryDataType.Int64 => _helper.WriteMemory(address, Convert.ToInt64(value)),
                 MemoryDataType.Float => _helper.WriteMemory(address, Convert.ToSingle(value)),
@@ -146,19 +148,48 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         {
             if (entry.Kind == WatchEntryKind.DirectAddress)
             {
-                finalAddress = entry.DirectAddress;
+                var resolvedAddress = entry.DirectAddress;
+                if (!string.IsNullOrWhiteSpace(entry.PointerBaseModuleName))
+                {
+                    var moduleByName = _modules.FirstOrDefault(m => string.Equals(m.Name, entry.PointerBaseModuleName, StringComparison.OrdinalIgnoreCase));
+                    if (moduleByName is not null)
+                    {
+                        resolvedAddress = moduleByName.Base + entry.PointerBaseModuleOffset;
+                    }
+                }
+
+                finalAddress = resolvedAddress;
                 displayAddress = FormatAddress(finalAddress);
                 return true;
             }
 
+            var pointerBaseAddress = entry.PointerBaseAddress;
+            if (!string.IsNullOrWhiteSpace(entry.PointerBaseModuleName))
+            {
+                var moduleByName = _modules.FirstOrDefault(m => string.Equals(m.Name, entry.PointerBaseModuleName, StringComparison.OrdinalIgnoreCase));
+                if (moduleByName is not null)
+                {
+                    pointerBaseAddress = moduleByName.Base + entry.PointerBaseModuleOffset;
+                }
+            }
+
             var offsets = entry.Offsets.ToArray();
-            var resolved = MemoryUtils.OffsetCalculator(_helper, entry.PointerBaseAddress, offsets);
+
+            // Pointer-chain with no offsets is effectively a static base address target.
+            if (offsets.Length == 0)
+            {
+                finalAddress = pointerBaseAddress;
+                displayAddress = FormatAddress(pointerBaseAddress);
+                return true;
+            }
+
+            var resolved = MemoryUtils.OffsetCalculator(_helper, pointerBaseAddress, offsets);
             finalAddress = resolved;
 
             // When attached, always prefer process-relative/module-resolved formatting.
-            var baseText = FormatAddress(entry.PointerBaseAddress);
+            var baseText = FormatAddress(pointerBaseAddress);
 
-            var offsetText = string.Join(",", entry.Offsets.Select(o => $"0x{o:X}"));
+            var offsetText = string.Join(",", offsets.Select(o => $"0x{o:X}"));
             displayAddress = $"{baseText} [{offsetText}] -> {FormatAddress(finalAddress)}";
             return true;
         }
@@ -199,6 +230,11 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         return modules;
     }
 }
+
+
+
+
+
 
 
 

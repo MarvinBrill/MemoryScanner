@@ -1,4 +1,5 @@
 using System.Collections.ObjectModel;
+using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
@@ -10,9 +11,23 @@ public enum MemoryDataType
     Int32,
     Int64,
     Float,
-    Double
+    Double,
+    Int16
 }
 
+
+public static class MemoryDataTypeUiOrder
+{
+    public static IReadOnlyList<MemoryDataType> Ordered { get; } = new[]
+    {
+        MemoryDataType.Byte,
+        MemoryDataType.Int16,
+        MemoryDataType.Int32,
+        MemoryDataType.Int64,
+        MemoryDataType.Float,
+        MemoryDataType.Double
+    };
+}
 public enum ScanComparison
 {
     Equal,
@@ -128,6 +143,7 @@ public sealed class PointerScanOptions
     public int MaxDepth { get; set; } = 5;
     public int MaxOffset { get; set; } = 16384;
     public int MaxResults { get; set; } = 5000;
+    public bool UseResultLimit { get; set; } = false;
     public int ThreadCount { get; set; } = Math.Max(1, Environment.ProcessorCount / 2);
     public int Alignment { get; set; } = 4;
     public bool IncludePrivate { get; set; } = true;
@@ -143,6 +159,11 @@ public sealed class PointerScanOptions
         }
 
         return Math.Min(ThreadCount, Environment.ProcessorCount);
+    }
+
+    public int NormalizedResultLimit()
+    {
+        return Math.Max(1, MaxResults);
     }
 }
 
@@ -164,5 +185,9 @@ public sealed class ModuleRange
 
     public bool Contains(ulong address) => address >= Base && address < End;
 }
+
+
+
+
 
 

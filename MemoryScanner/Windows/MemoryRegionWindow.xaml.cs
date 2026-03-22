@@ -44,7 +44,7 @@ public partial class MemoryRegionWindow : Window
         _downView.Filter = FilterRow;
         _upView.Filter = FilterRow;
 
-        DataTypeBox.ItemsSource = Enum.GetValues<MemoryDataType>();
+        DataTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
         DataTypeBox.SelectedItem = initialType;
 
         FilterComparisonBox.ItemsSource = Enum.GetValues<ScanComparison>();
@@ -410,6 +410,7 @@ public partial class MemoryRegionWindow : Window
     private static int GetTypeSize(MemoryDataType dataType) => dataType switch
     {
         MemoryDataType.Byte => sizeof(byte),
+        MemoryDataType.Int16 => sizeof(short),
         MemoryDataType.Int32 => sizeof(int),
         MemoryDataType.Int64 => sizeof(long),
         MemoryDataType.Float => sizeof(float),
@@ -488,3 +489,6 @@ public partial class MemoryRegionWindow : Window
         }
     }
 }
+
+
+
