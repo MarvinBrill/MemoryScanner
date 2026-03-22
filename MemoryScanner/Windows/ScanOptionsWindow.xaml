@@ -1,9 +1,10 @@
-﻿<Window x:Class="MemoryScanner.Windows.ScanOptionsWindow"
+<Window x:Class="MemoryScanner.Windows.ScanOptionsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Scan Options" Height="320" Width="460" WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+        Title="Scan Options" Height="350" Width="460" WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Grid Margin="12">
         <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
             <RowDefinition Height="Auto"/>
@@ -22,8 +23,15 @@
         <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Thread Count"/>
         <TextBox x:Name="ThreadCountText" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8"/>
 
-        <CheckBox x:Name="UseResultLimitBox"
+        <CheckBox x:Name="IncludeMappedBox"
                   Grid.Row="2"
+                  Grid.Column="0"
+                  Grid.ColumnSpan="2"
+                  Margin="0,0,0,6"
+                  Content="Include Mapped Memory Regions"/>
+
+        <CheckBox x:Name="UseResultLimitBox"
+                  Grid.Row="3"
                   Grid.Column="0"
                   Grid.ColumnSpan="2"
                   Margin="0,0,0,6"
@@ -31,15 +39,15 @@
                   Checked="UseResultLimitBox_OnCheckedChanged"
                   Unchecked="UseResultLimitBox_OnCheckedChanged"/>
 
-        <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Result Limit"/>
-        <TextBox x:Name="ResultLimitText" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8"/>
+        <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Result Limit"/>
+        <TextBox x:Name="ResultLimitText" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8"/>
 
-        <Border Grid.Row="4" Grid.ColumnSpan="2" Background="#FFF5F5F5" BorderBrush="#FFDADADA" BorderThickness="1" Padding="8" Margin="0,4,0,0">
+        <Border Grid.Row="5" Grid.ColumnSpan="2" Background="#FFF5F5F5" BorderBrush="#FFDADADA" BorderThickness="1" Padding="8" Margin="0,4,0,0">
             <TextBlock TextWrapping="Wrap" Foreground="#FF333333"
                        Text="Quick = faster, less complete. Balanced = standard. Deep = most complete and slower (unaligned scan)."/>
         </Border>
 
-        <StackPanel Grid.Row="5" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right">
+        <StackPanel Grid.Row="6" Grid.ColumnSpan="2" Orientation="Horizontal" HorizontalAlignment="Right">
             <Button Content="Cancel" Width="100" Height="30" Margin="0,0,8,0" Click="Cancel_OnClick"/>
             <Button Content="Apply" Width="100" Height="30" Click="Apply_OnClick"/>
         </StackPanel>

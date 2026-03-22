@@ -1,4 +1,4 @@
-﻿namespace MemoryScanner.Models;
+namespace MemoryScanner.Models;
 
 public enum ScanDepthProfile
 {
@@ -13,6 +13,7 @@ public sealed class ScanExecutionOptions
     public int ThreadCount { get; set; } = Math.Max(1, Environment.ProcessorCount / 2);
     public bool UseResultLimit { get; set; } = false;
     public int ResultLimit { get; set; } = 5000;
+    public bool IncludeMapped { get; set; } = false;
 
     public int NormalizedThreadCount()
     {

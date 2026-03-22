@@ -1,7 +1,7 @@
 <Window x:Class="MemoryScanner.Windows.PointerScanOptionsWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
-        Title="Pointer Scan Options" Height="430" Width="460" WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
+        Title="Pointer Scan Options" Height="760" Width="540" WindowStartupLocation="CenterOwner" ResizeMode="NoResize">
     <Grid Margin="12">
         <Grid.RowDefinitions>
             <RowDefinition Height="*"/>
@@ -20,9 +20,20 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="170"/>
+                <ColumnDefinition Width="220"/>
                 <ColumnDefinition Width="*"/>
             </Grid.ColumnDefinitions>
 
@@ -41,23 +52,52 @@
             </ComboBox>
 
             <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Alignment"/>
-            <ComboBox x:Name="AlignmentBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8">
+            <ComboBox x:Name="AlignmentBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8" IsEditable="True">
+                <ComboBoxItem Content="1"/>
+                <ComboBoxItem Content="2"/>
                 <ComboBoxItem Content="4"/>
                 <ComboBoxItem Content="8"/>
+                <ComboBoxItem Content="16"/>
+                <ComboBoxItem Content="32"/>
+                <ComboBoxItem Content="64"/>
             </ComboBox>
 
-            <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Thread Count"/>
-            <TextBox x:Name="ThreadCountText" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8"/>
+            <TextBlock Grid.Row="3" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Pointer Width"/>
+            <ComboBox x:Name="PointerWidthModeBox" Grid.Row="3" Grid.Column="1" Margin="0,0,0,8">
+                <ComboBoxItem Content="Auto (recommended)" Tag="Auto"/>
+                <ComboBoxItem Content="Force 32-bit" Tag="Force32Bit"/>
+                <ComboBoxItem Content="Force 64-bit" Tag="Force64Bit"/>
+            </ComboBox>
 
-            <CheckBox x:Name="UseResultLimitBox" Grid.Row="4" Grid.ColumnSpan="2" Margin="0,2,0,8" Content="Use result limit" Checked="UseResultLimitBox_OnChanged" Unchecked="UseResultLimitBox_OnChanged"/>
+            <TextBlock Grid.Row="4" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Thread Count"/>
+            <TextBox x:Name="ThreadCountText" Grid.Row="4" Grid.Column="1" Margin="0,0,0,8"/>
 
-            <TextBlock Grid.Row="5" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Result Limit"/>
-            <TextBox x:Name="ResultLimitText" Grid.Row="5" Grid.Column="1" Margin="0,0,0,8"/>
+            <CheckBox x:Name="UseResultLimitBox" Grid.Row="5" Grid.ColumnSpan="2" Margin="0,2,0,8" Content="Use result limit" Checked="UseResultLimitBox_OnChanged" Unchecked="UseResultLimitBox_OnChanged"/>
 
-            <CheckBox x:Name="IncludePrivateBox" Grid.Row="6" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Private"/>
-            <CheckBox x:Name="IncludeMappedBox" Grid.Row="7" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Mapped"/>
-            <CheckBox x:Name="IncludeImageBox" Grid.Row="8" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Image/Module"/>
-            <CheckBox x:Name="RequireStaticRootBox" Grid.Row="9" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Only Process+Base results (static roots)"/>
+            <TextBlock Grid.Row="6" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Result Limit"/>
+            <TextBox x:Name="ResultLimitText" Grid.Row="6" Grid.Column="1" Margin="0,0,0,8"/>
+
+            <CheckBox x:Name="IncludePrivateBox" Grid.Row="7" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Private"/>
+            <CheckBox x:Name="IncludeMappedBox" Grid.Row="8" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Mapped"/>
+            <CheckBox x:Name="IncludeImageBox" Grid.Row="9" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Image/Module"/>
+
+            <CheckBox x:Name="RequireStaticRootBox" Grid.Row="10" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Only Process+Base results (static roots)"/>
+            <CheckBox x:Name="ExcludeReadOnlyNodesBox" Grid.Row="11" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Don't include pointers with read-only nodes"/>
+            <CheckBox x:Name="NoLoopingPointersBox" Grid.Row="12" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="No looping pointers"/>
+            <CheckBox x:Name="StopTraversingAfterStaticRootBox" Grid.Row="13" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Stop traversing after static root was found"/>
+            <CheckBox x:Name="AggressiveNodeDeduplicationBox" Grid.Row="14" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Aggressive node deduplication (faster, may miss routes)"/>
+            <CheckBox x:Name="AllowNegativeOffsetsBox" Grid.Row="15" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Allow negative offsets"/>
+
+            <CheckBox x:Name="UseAddressRangeBox" Grid.Row="16" Grid.ColumnSpan="2" Margin="0,2,0,8" Content="Use address range (From/To)" Checked="UseAddressRangeBox_OnChanged" Unchecked="UseAddressRangeBox_OnChanged"/>
+
+            <TextBlock Grid.Row="17" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Range From"/>
+            <TextBox x:Name="AddressRangeFromText" Grid.Row="17" Grid.Column="1" Margin="0,0,0,8"/>
+
+            <TextBlock Grid.Row="18" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Range To"/>
+            <TextBox x:Name="AddressRangeToText" Grid.Row="18" Grid.Column="1" Margin="0,0,0,8"/>
+
+            <CheckBox x:Name="RequireRootInRangeBox" Grid.Row="19" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Require base/root address in range"/>
+            <CheckBox x:Name="RequireAllNodesInRangeBox" Grid.Row="20" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Require all pointer nodes in range (strict)"/>
         </Grid>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
@@ -66,5 +106,4 @@
         </StackPanel>
     </Grid>
 </Window>
-
 

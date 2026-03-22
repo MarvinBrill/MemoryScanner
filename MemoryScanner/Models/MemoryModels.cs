@@ -45,6 +45,13 @@ public enum WatchEntryKind
     DirectAddress,
     PointerChain
 }
+public enum PointerValueWidthMode
+{
+    Auto,
+    Force32Bit,
+    Force64Bit
+}
+
 
 public sealed class WatchEntry : INotifyPropertyChanged
 {
@@ -60,6 +67,7 @@ public sealed class WatchEntry : INotifyPropertyChanged
     public MemoryDataType DataType { get; set; } = MemoryDataType.Int32;
     public ulong DirectAddress { get; set; }
     public ulong PointerBaseAddress { get; set; }
+    public int PointerSizeBytes { get; set; } = 0;
     public string PointerBaseModuleName { get; set; } = string.Empty;
     public ulong PointerBaseModuleOffset { get; set; }
     public ObservableCollection<int> Offsets { get; set; } = new();
@@ -150,6 +158,17 @@ public sealed class PointerScanOptions
     public bool IncludeMapped { get; set; } = true;
     public bool IncludeModuleImage { get; set; } = true;
     public bool RequireStaticRoot { get; set; } = false;
+    public bool ExcludeReadOnlyNodes { get; set; } = false;
+    public bool NoLoopingPointers { get; set; } = true;
+    public bool StopTraversingAfterStaticRoot { get; set; } = false;
+    public bool AggressiveNodeDeduplication { get; set; } = true;
+    public bool AllowNegativeOffsets { get; set; } = false;
+    public PointerValueWidthMode PointerWidthMode { get; set; } = PointerValueWidthMode.Auto;
+    public bool UseAddressRange { get; set; } = false;
+    public ulong AddressRangeFrom { get; set; } = 0;
+    public ulong AddressRangeTo { get; set; } = 0;
+    public bool RequireRootInAddressRange { get; set; } = false;
+    public bool RequireAllNodesInAddressRange { get; set; } = false;
 
     public int NormalizedThreadCount()
     {
@@ -165,11 +184,36 @@ public sealed class PointerScanOptions
     {
         return Math.Max(1, MaxResults);
     }
+
+    public bool TryGetNormalizedAddressRange(out ulong min, out ulong max)
+    {
+        min = 0;
+        max = 0;
+
+        if (!UseAddressRange)
+        {
+            return false;
+        }
+
+        if (AddressRangeFrom <= AddressRangeTo)
+        {
+            min = AddressRangeFrom;
+            max = AddressRangeTo;
+        }
+        else
+        {
+            min = AddressRangeTo;
+            max = AddressRangeFrom;
+        }
+
+        return true;
+    }
 }
 
 public sealed class PointerPath
 {
     public ulong BaseAddress { get; set; }
+    public int PointerSizeBytes { get; set; } = 0;
     public string BaseModuleName { get; set; } = string.Empty;
     public ulong BaseModuleOffset { get; set; }
     public List<int> Offsets { get; set; } = new();
@@ -185,6 +229,10 @@ public sealed class ModuleRange
 
     public bool Contains(ulong address) => address >= Base && address < End;
 }
+
+
+
+
 
 
 

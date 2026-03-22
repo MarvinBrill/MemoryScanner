@@ -47,7 +47,7 @@ public sealed class ScanService
         var effectiveLimit = executionOptions.NormalizedResultLimit();
         var hasLimit = executionOptions.UseResultLimit;
 
-        var regions = _regionEnumerator.Enumerate(_memory.Process, includePrivate, includeImage);
+        var regions = _regionEnumerator.Enumerate(_memory.Process, includePrivate, includeImage, executionOptions.IncludeMapped);
         var slices = SliceRegions(regions, RegionSliceSize);
         var totalSteps = CalculateTotalSteps(slices, typeSize, stepSize);
         ReportProgress(progress, 0, totalSteps, "Scanning memory");

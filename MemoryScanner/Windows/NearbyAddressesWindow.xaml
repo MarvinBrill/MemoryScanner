@@ -1,0 +1,124 @@
+<Window x:Class="MemoryScanner.Windows.NearbyAddressesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Nearby Addresses" Height="740" Width="1220" WindowStartupLocation="CenterOwner">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0" Text="Data Type" VerticalAlignment="Center"/>
+            <ComboBox x:Name="DataTypeBox" Grid.Column="1" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Column="2" Text="Entries / Page" VerticalAlignment="Center"/>
+            <TextBox x:Name="EntriesPerPageText" Grid.Column="3" Margin="6,0,12,0" Text="200" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Column="4" Text="Refresh (ms)" VerticalAlignment="Center"/>
+            <TextBox x:Name="RefreshMsText" Grid.Column="5" Margin="6,0,12,0" Text="200" VerticalAlignment="Center"/>
+
+            <Button Grid.Column="6" Content="Apply" Width="90" Height="30" Margin="0,0,8,0" Click="Apply_OnClick"/>
+            <Button Grid.Column="7" Content="Refresh" Width="100" Height="30" Margin="0,0,8,0" Click="RefreshNow_OnClick"/>
+
+            <TextBlock x:Name="CenterAddressText" Grid.Column="10" VerticalAlignment="Center" Margin="12,0,0,0" Foreground="#FF444444"/>
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0" Text="Filter Condition" VerticalAlignment="Center"/>
+            <ComboBox x:Name="FilterComparisonBox" Grid.Column="1" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+            <TextBlock Grid.Column="2" Text="Filter Value" VerticalAlignment="Center"/>
+            <TextBox x:Name="FilterValueText" Grid.Column="3" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+            <CheckBox x:Name="EnableFilterBox" Grid.Column="4" Content="Filter active" VerticalAlignment="Center"/>
+            <Button Grid.Column="5" Content="Apply" Width="80" Height="30" Margin="8,0,8,0" Click="ApplyFilter_OnClick"/>
+            <Button Grid.Column="6" Content="Clear" Width="80" Height="30" Click="ClearFilter_OnClick"/>
+
+            <Button x:Name="PrevPageButton" Grid.Column="8" Width="38" Height="30" Margin="0,0,8,0" Click="PrevPage_OnClick" ToolTip="Previous Page">
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72B;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Button>
+            <TextBlock x:Name="PageInfoText" Grid.Column="9" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#FF444444" Text="0x0 .. 0x0"/>
+            <Button x:Name="NextPageButton" Grid.Column="10" Width="38" Height="30" Click="NextPage_OnClick" ToolTip="Next Page">
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Button>
+        </Grid>
+
+        <DataGrid x:Name="NearbyGrid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  SelectionMode="Extended"
+                  IsReadOnly="True"
+                  Background="#FF242424"
+                  Foreground="#FFF0F0F0"
+                  RowBackground="#FF242424"
+                  AlternatingRowBackground="#FF292929"
+                  BorderThickness="0"
+                  MouseDoubleClick="NearbyGrid_OnMouseDoubleClick">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <EventSetter Event="PreviewMouseLeftButtonDown" Handler="DataGridRow_PreviewMouseLeftButtonDown"/>
+                </Style>
+            </DataGrid.RowStyle>
+            <DataGrid.ColumnHeaderStyle>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="Foreground" Value="Black"/>
+                </Style>
+            </DataGrid.ColumnHeaderStyle>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Address" Binding="{Binding DisplayAddress}" Width="2.2*">
+                    <DataGridTextColumn.ElementStyle>
+                        <Style TargetType="TextBlock">
+                            <Style.Triggers>
+                                <DataTrigger Binding="{Binding IsProcessBaseDisplay}" Value="True">
+                                    <Setter Property="Foreground" Value="#FF4CD964"/>
+                                </DataTrigger>
+                            </Style.Triggers>
+                        </Style>
+                    </DataGridTextColumn.ElementStyle>
+                </DataGridTextColumn>
+                <DataGridTextColumn Header="Value" Binding="{Binding ValueText}" Width="1.2*"/>
+                <DataGridTextColumn Header="Raw Address" Binding="{Binding AddressHex}" Width="1.6*"/>
+                <DataGridTextColumn Header="Type" Binding="{Binding DataType}" Width="*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="3" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Take Selected" Width="130" Height="30" Margin="0,0,8,0" Click="TakeSelected_OnClick"/>
+            <Button Content="Close" Width="90" Height="30" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>
+
+
+

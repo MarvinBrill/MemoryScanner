@@ -13,12 +13,18 @@ public sealed class MemoryRegion
     public uint Type { get; init; }
 
     public bool IsReadable => State == MEM_COMMIT && (Protect & PAGE_GUARD) == 0 && (Protect & PAGE_NOACCESS) == 0;
+    public bool IsWritable => (Protect & (PAGE_READWRITE | PAGE_WRITECOPY | PAGE_EXECUTE_READWRITE | PAGE_EXECUTE_WRITECOPY)) != 0;
 
     public const uint MEM_COMMIT = 0x1000;
     public const uint MEM_PRIVATE = 0x20000;
+    public const uint MEM_MAPPED = 0x40000;
     public const uint MEM_IMAGE = 0x1000000;
-    public const uint PAGE_GUARD = 0x100;
     public const uint PAGE_NOACCESS = 0x01;
+    public const uint PAGE_READWRITE = 0x04;
+    public const uint PAGE_WRITECOPY = 0x08;
+    public const uint PAGE_EXECUTE_READWRITE = 0x40;
+    public const uint PAGE_EXECUTE_WRITECOPY = 0x80;
+    public const uint PAGE_GUARD = 0x100;
 }
 
 public sealed class MemoryRegionEnumerator
@@ -55,6 +61,7 @@ public sealed class MemoryRegionEnumerator
             if (region.IsReadable)
             {
                 var allowed = (includePrivate && region.Type == MemoryRegion.MEM_PRIVATE) ||
+                              (includeMapped && region.Type == MemoryRegion.MEM_MAPPED) ||
                               (includeImage && region.Type == MemoryRegion.MEM_IMAGE);
                 if (allowed)
                 {

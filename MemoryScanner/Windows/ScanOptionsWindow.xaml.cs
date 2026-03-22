@@ -1,4 +1,4 @@
-﻿using MemoryScanner.Models;
+using MemoryScanner.Models;
 using System.Windows;
 
 namespace MemoryScanner.Windows;
@@ -14,6 +14,7 @@ public partial class ScanOptionsWindow : Window
         DepthProfileBox.ItemsSource = Enum.GetValues<ScanDepthProfile>();
         DepthProfileBox.SelectedItem = currentOptions.DepthProfile;
         ThreadCountText.Text = currentOptions.ThreadCount.ToString();
+        IncludeMappedBox.IsChecked = currentOptions.IncludeMapped;
 
         UseResultLimitBox.IsChecked = currentOptions.UseResultLimit;
         ResultLimitText.Text = currentOptions.ResultLimit.ToString();
@@ -66,7 +67,8 @@ public partial class ScanOptionsWindow : Window
             DepthProfile = profile,
             ThreadCount = threadCount,
             UseResultLimit = useResultLimit,
-            ResultLimit = resultLimit
+            ResultLimit = resultLimit,
+            IncludeMapped = IncludeMappedBox.IsChecked == true
         };
 
         DialogResult = true;

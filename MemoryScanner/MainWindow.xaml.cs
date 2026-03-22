@@ -8,6 +8,8 @@ using System.IO;
 using System.Runtime.CompilerServices;
 using System.Windows;
 using System.Windows.Controls;
+using System.Windows.Controls.Primitives;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -43,6 +45,8 @@ public partial class MainWindow : Window
     private int _watchRefreshCursor;
     private int _scanResultRefreshCursor;
     private bool _watchInvalidStateApplied;
+    private Point _watchDragStartPoint;
+    private WatchEntry? _watchDragSourceEntry;
 
     public MainWindow()
     {
@@ -277,6 +281,7 @@ public partial class MainWindow : Window
         entry.Kind = edited.Kind;
         entry.DirectAddress = edited.DirectAddress;
         entry.PointerBaseAddress = edited.PointerBaseAddress;
+        entry.PointerSizeBytes = edited.PointerSizeBytes;
         entry.PointerBaseModuleName = edited.PointerBaseModuleName;
         entry.PointerBaseModuleOffset = edited.PointerBaseModuleOffset;
         entry.Offsets = new ObservableCollection<int>(edited.Offsets);
@@ -583,6 +588,105 @@ public partial class MainWindow : Window
         }
     }
 
+    private void WatchGrid_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        _watchDragStartPoint = e.GetPosition(WatchGrid);
+        _watchDragSourceEntry = null;
+
+        var source = e.OriginalSource as DependencyObject;
+        if (FindVisualParent<DataGridColumnHeader>(source) is not null)
+        {
+            return;
+        }
+
+        var cell = FindVisualParent<DataGridCell>(source);
+        if (cell?.Column is DataGridCheckBoxColumn)
+        {
+            return;
+        }
+
+        var row = FindVisualParent<DataGridRow>(source);
+        if (row?.DataContext is WatchEntry entry)
+        {
+            _watchDragSourceEntry = entry;
+        }
+    }
+
+    private void WatchGrid_OnMouseMove(object sender, MouseEventArgs e)
+    {
+        if (e.LeftButton != MouseButtonState.Pressed || _watchDragSourceEntry is null)
+        {
+            return;
+        }
+
+        var position = e.GetPosition(WatchGrid);
+        var delta = _watchDragStartPoint - position;
+        if (Math.Abs(delta.X) < SystemParameters.MinimumHorizontalDragDistance &&
+            Math.Abs(delta.Y) < SystemParameters.MinimumVerticalDragDistance)
+        {
+            return;
+        }
+
+        DragDrop.DoDragDrop(WatchGrid, new DataObject(typeof(WatchEntry), _watchDragSourceEntry), DragDropEffects.Move);
+        _watchDragSourceEntry = null;
+    }
+
+    private void WatchGrid_OnDragOver(object sender, DragEventArgs e)
+    {
+        if (!e.Data.GetDataPresent(typeof(WatchEntry)))
+        {
+            e.Effects = DragDropEffects.None;
+            e.Handled = true;
+            return;
+        }
+
+        e.Effects = DragDropEffects.Move;
+        e.Handled = true;
+    }
+
+    private void WatchGrid_OnDrop(object sender, DragEventArgs e)
+    {
+        try
+        {
+            if (!e.Data.GetDataPresent(typeof(WatchEntry)))
+            {
+                return;
+            }
+
+            if (e.Data.GetData(typeof(WatchEntry)) is not WatchEntry draggedEntry)
+            {
+                return;
+            }
+
+            var oldIndex = _watchEntries.IndexOf(draggedEntry);
+            if (oldIndex < 0)
+            {
+                return;
+            }
+
+            var source = e.OriginalSource as DependencyObject;
+            var targetRow = FindVisualParent<DataGridRow>(source);
+            var targetEntry = targetRow?.Item as WatchEntry;
+            var newIndex = targetEntry is null
+                ? _watchEntries.Count - 1
+                : _watchEntries.IndexOf(targetEntry);
+
+            if (newIndex < 0 || newIndex == oldIndex)
+            {
+                return;
+            }
+
+            _watchEntries.Move(oldIndex, newIndex);
+            WatchGrid.SelectedItem = draggedEntry;
+            WatchGrid.ScrollIntoView(draggedEntry);
+        }
+        finally
+        {
+            _watchDragSourceEntry = null;
+            e.Handled = true;
+        }
+    }
+
     private void UpdateScanResultRowValue(ScanResultRow row)
     {
         if (_memoryAccessor.TryReadValue(row.Address, row.DataType, out var value))
@@ -717,7 +821,8 @@ public partial class MainWindow : Window
     {
         var limitText = _scanOptions.UseResultLimit ? _scanOptions.ResultLimit.ToString() : "off";
         var updateMsText = UiUpdateRoutineSettings.ValueRefreshIntervalMs;
-        ScanProgressText.Text = $"Idle | Options: {_scanOptions.DepthProfile}, Threads {_scanOptions.ThreadCount}, Limit {limitText}, Update {updateMsText} ms";
+        var mappedText = _scanOptions.IncludeMapped ? "on" : "off";
+        ScanProgressText.Text = $"Idle | Options: {_scanOptions.DepthProfile}, Threads {_scanOptions.ThreadCount}, Mapped {mappedText}, Limit {limitText}, Update {updateMsText} ms";
     }
 
     private void ScanResultGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -812,9 +917,9 @@ public partial class MainWindow : Window
         OpenPointerScannerWithAddress(initialAddress, initialType);
     }
 
-    private void OpenPointerScannerWithAddress(ulong address, MemoryDataType initialType)
+    private void OpenPointerScannerWithAddress(ulong address, MemoryDataType initialType, PointerScanOptions? initialOptions = null)
     {
-        var pointerWindow = new PointerScanWindow(_pointerScanService, _memoryAccessor, address, initialType) { Owner = this };
+        var pointerWindow = new PointerScanWindow(_pointerScanService, _memoryAccessor, address, initialType, initialOptions) { Owner = this };
         if (pointerWindow.ShowDialog() != true)
         {
             return;
@@ -831,7 +936,7 @@ public partial class MainWindow : Window
         }
     }
 
-    private void ShowMemoryRegionFromWatch_OnClick(object sender, RoutedEventArgs e)
+    private void ShowNearbyAddressesFromWatch_OnClick(object sender, RoutedEventArgs e)
     {
         if (!_memoryAccessor.IsAttached)
         {
@@ -850,10 +955,10 @@ public partial class MainWindow : Window
             return;
         }
 
-        ShowMemoryRegionWindow(resolvedAddress, selected.DataType);
+        ShowNearbyAddressesWindow(resolvedAddress, selected.DataType);
     }
 
-    private void ShowMemoryRegionFromScanResult_OnClick(object sender, RoutedEventArgs e)
+    private void ShowNearbyAddressesFromScanResult_OnClick(object sender, RoutedEventArgs e)
     {
         if (!_memoryAccessor.IsAttached)
         {
@@ -866,14 +971,16 @@ public partial class MainWindow : Window
             return;
         }
 
-        ShowMemoryRegionWindow(row.Address, row.DataType);
+        ShowNearbyAddressesWindow(row.Address, row.DataType);
     }
 
-    private void ShowMemoryRegionWindow(ulong centerAddress, MemoryDataType dataType)
+    private void ShowNearbyAddressesWindow(ulong centerAddress, MemoryDataType dataType)
     {
-        var viewer = new MemoryRegionWindow(_memoryAccessor, centerAddress, dataType) { Owner = this };
+        var viewer = new NearbyAddressesWindow(_memoryAccessor, centerAddress, dataType) { Owner = this };
+        viewer.QuickTakeRequested += OnNearbyQuickTakeRequested;
         if (viewer.ShowDialog() != true)
         {
+            viewer.QuickTakeRequested -= OnNearbyQuickTakeRequested;
             return;
         }
 
@@ -881,6 +988,109 @@ public partial class MainWindow : Window
         {
             AddWatchEntry(entry);
         }
+
+        viewer.QuickTakeRequested -= OnNearbyQuickTakeRequested;
+    }
+
+    private void OnNearbyQuickTakeRequested(WatchEntry entry)
+    {
+        AddWatchEntry(entry);
+    }
+
+    private void OpenMemoryViewerFromWatch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (WatchGrid.SelectedItem is not WatchEntry selected)
+        {
+            return;
+        }
+
+        if (!_memoryAccessor.TryResolveWatchAddress(selected, out var resolvedAddress, out _))
+        {
+            MessageBox.Show(this, "Could not resolve selected entry address.", "Resolve Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        OpenMemoryViewerWindow(resolvedAddress);
+    }
+
+    private void OpenMemoryViewerFromScanResult_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (ScanResultGrid.SelectedItem is not ScanResultRow row)
+        {
+            return;
+        }
+
+        OpenMemoryViewerWindow(row.Address);
+    }
+
+    private void OpenMemoryViewerWindow(ulong startAddress)
+    {
+        var viewer = new MemoryViewerWindow(_memoryAccessor, startAddress) { Owner = this };
+        viewer.ShowDialog();
+    }
+
+    private void FindWriteAccessFromWatch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (WatchGrid.SelectedItem is not WatchEntry selected)
+        {
+            return;
+        }
+
+        if (!_memoryAccessor.TryResolveWatchAddress(selected, out var resolvedAddress, out _))
+        {
+            MessageBox.Show(this, "Could not resolve selected entry address.", "Resolve Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        OpenWriteAccessTracerWindow(resolvedAddress, selected.DataType);
+    }
+
+    private void FindWriteAccessFromScanResult_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (ScanResultGrid.SelectedItem is not ScanResultRow row)
+        {
+            return;
+        }
+
+        OpenWriteAccessTracerWindow(row.Address, row.DataType);
+    }
+
+    private void OpenWriteAccessTracerWindow(ulong address, MemoryDataType dataType)
+    {
+        var tracer = new WriteAccessTracerWindow(
+            _memoryAccessor,
+            address,
+            dataType,
+            (baseAddress, selectedType, initialOptions) => OpenPointerScannerWithAddress(baseAddress, selectedType, initialOptions))
+        {
+            Owner = this
+        };
+
+        tracer.ShowDialog();
     }
 
     private void MenuLoadWatchList_OnClick(object sender, RoutedEventArgs e)
@@ -1659,3 +1869,9 @@ public partial class MainWindow : Window
         }
     }
 }
+
+
+
+
+
+

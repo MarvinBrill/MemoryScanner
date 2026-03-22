@@ -1,5 +1,6 @@
 using MemoryScanner.Models;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 
 namespace MemoryScanner.Core;
 
@@ -183,13 +184,17 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
                 return true;
             }
 
-            var resolved = MemoryUtils.OffsetCalculator(_helper, pointerBaseAddress, offsets);
+            if (!TryResolvePointerChainAddress(pointerBaseAddress, offsets, entry.PointerSizeBytes, out var resolved))
+            {
+                return false;
+            }
+
             finalAddress = resolved;
 
             // When attached, always prefer process-relative/module-resolved formatting.
             var baseText = FormatAddress(pointerBaseAddress);
 
-            var offsetText = string.Join(",", offsets.Select(o => $"0x{o:X}"));
+            var offsetText = string.Join(",", offsets.Select(FormatOffset));
             displayAddress = $"{baseText} [{offsetText}] -> {FormatAddress(finalAddress)}";
             return true;
         }
@@ -199,6 +204,49 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         }
     }
 
+    private bool TryResolvePointerChainAddress(ulong baseAddress, int[] offsets, int pointerSizeBytesHint, out ulong resolvedAddress)
+    {
+        resolvedAddress = baseAddress;
+        if (_helper is null)
+        {
+            return false;
+        }
+
+        var pointerSizeBytes = ResolvePointerSizeBytes(pointerSizeBytesHint);
+        foreach (var offset in offsets)
+        {
+            if (pointerSizeBytes == 4)
+            {
+                uint pointer = _helper.ReadMemory<uint>(resolvedAddress);
+                var next = (long)pointer + offset;
+                if (next < 0 || next > uint.MaxValue)
+                {
+                    return false;
+                }
+
+                resolvedAddress = (uint)next;
+                continue;
+            }
+
+            ulong pointer64 = _helper.ReadMemory<ulong>(resolvedAddress);
+            resolvedAddress = unchecked((ulong)((long)pointer64 + offset));
+        }
+
+        return true;
+    }
+
+    private int ResolvePointerSizeBytes(int pointerSizeBytesHint)
+    {
+        if (pointerSizeBytesHint == 4 || pointerSizeBytesHint == 8)
+        {
+            return pointerSizeBytesHint;
+        }
+
+        return IsWow64Process(Process.Handle, out var wow64) && wow64 ? 4 : 8;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsWow64Process(IntPtr processHandle, out bool wow64Process);
     public string FormatAddress(ulong address)
     {
         var module = _modules.FirstOrDefault(m => m.Contains(address));
@@ -210,6 +258,11 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         var offset = address - module.Base;
         var processName = _process?.ProcessName ?? "Process";
         return $"{processName}+0x{offset:X}";
+    }
+
+    private static string FormatOffset(int offset)
+    {
+        return offset < 0 ? "-0x" + Math.Abs(offset).ToString("X") : "0x" + offset.ToString("X");
     }
 
     private static List<ModuleRange> LoadModules(Process process)
@@ -230,6 +283,11 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         return modules;
     }
 }
+
+
+
+
+
 
 
 

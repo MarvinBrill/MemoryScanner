@@ -51,12 +51,18 @@ public partial class PointerScanWindow : Window
     public List<PointerPath> SelectedPaths { get; private set; } = new();
     public MemoryDataType SelectedValueDataType => _selectedValueDataType;
 
-    public PointerScanWindow(PointerScanService pointerScanService, IMemoryAccessor memoryAccessor, ulong targetAddress, MemoryDataType valueDataType)
+    public PointerScanWindow(
+        PointerScanService pointerScanService,
+        IMemoryAccessor memoryAccessor,
+        ulong targetAddress,
+        MemoryDataType valueDataType,
+        PointerScanOptions? initialOptions = null)
     {
         _pointerScanService = pointerScanService;
         _memoryAccessor = memoryAccessor;
         _targetAddress = targetAddress;
         _selectedValueDataType = valueDataType;
+        _runtimeOptions = CloneOptions(initialOptions) ?? new PointerScanOptions();
 
         InitializeComponent();
         _rowsView = CollectionViewSource.GetDefaultView(Rows);
@@ -79,6 +85,40 @@ public partial class PointerScanWindow : Window
         UpdateOptionsText();
         SetIdleUi();
         UpdateWindowTitle();
+    }
+
+
+    private static PointerScanOptions? CloneOptions(PointerScanOptions? source)
+    {
+        if (source is null)
+        {
+            return null;
+        }
+
+        return new PointerScanOptions
+        {
+            MaxDepth = source.MaxDepth,
+            MaxOffset = source.MaxOffset,
+            MaxResults = source.MaxResults,
+            UseResultLimit = source.UseResultLimit,
+            ThreadCount = source.ThreadCount,
+            Alignment = source.Alignment,
+            IncludePrivate = source.IncludePrivate,
+            IncludeMapped = source.IncludeMapped,
+            IncludeModuleImage = source.IncludeModuleImage,
+            RequireStaticRoot = source.RequireStaticRoot,
+            ExcludeReadOnlyNodes = source.ExcludeReadOnlyNodes,
+            NoLoopingPointers = source.NoLoopingPointers,
+            StopTraversingAfterStaticRoot = source.StopTraversingAfterStaticRoot,
+            AggressiveNodeDeduplication = source.AggressiveNodeDeduplication,
+            AllowNegativeOffsets = source.AllowNegativeOffsets,
+            PointerWidthMode = source.PointerWidthMode,
+            UseAddressRange = source.UseAddressRange,
+            AddressRangeFrom = source.AddressRangeFrom,
+            AddressRangeTo = source.AddressRangeTo,
+            RequireRootInAddressRange = source.RequireRootInAddressRange,
+            RequireAllNodesInAddressRange = source.RequireAllNodesInAddressRange
+        };
     }
 
     private void MenuLoadResults_OnClick(object sender, RoutedEventArgs e)
@@ -810,6 +850,17 @@ public partial class PointerScanWindow : Window
         options.IncludeMapped = _runtimeOptions.IncludeMapped;
         options.IncludeModuleImage = _runtimeOptions.IncludeModuleImage;
         options.RequireStaticRoot = _runtimeOptions.RequireStaticRoot;
+        options.ExcludeReadOnlyNodes = _runtimeOptions.ExcludeReadOnlyNodes;
+        options.NoLoopingPointers = _runtimeOptions.NoLoopingPointers;
+        options.StopTraversingAfterStaticRoot = _runtimeOptions.StopTraversingAfterStaticRoot;
+        options.AggressiveNodeDeduplication = _runtimeOptions.AggressiveNodeDeduplication;
+        options.AllowNegativeOffsets = _runtimeOptions.AllowNegativeOffsets;
+        options.PointerWidthMode = _runtimeOptions.PointerWidthMode;
+        options.UseAddressRange = _runtimeOptions.UseAddressRange;
+        options.AddressRangeFrom = _runtimeOptions.AddressRangeFrom;
+        options.AddressRangeTo = _runtimeOptions.AddressRangeTo;
+        options.RequireRootInAddressRange = _runtimeOptions.RequireRootInAddressRange;
+        options.RequireAllNodesInAddressRange = _runtimeOptions.RequireAllNodesInAddressRange;
 
         return true;
     }
@@ -888,7 +939,8 @@ public partial class PointerScanWindow : Window
             BaseModuleOffset = source.BaseModuleOffset,
             Offsets = source.Offsets.ToList(),
             DisplayExpression = source.DisplayExpression,
-            FinalAddressPreview = source.FinalAddressPreview
+            FinalAddressPreview = source.FinalAddressPreview,
+            PointerSizeBytes = source.PointerSizeBytes
         };
     }
 
@@ -898,6 +950,11 @@ public partial class PointerScanWindow : Window
         {
             PointerExpressionText = BuildPointerExpression(path)
         };
+    }
+
+    private static string FormatOffset(int offset)
+    {
+        return offset < 0 ? "-0x" + Math.Abs(offset).ToString("X") : "0x" + offset.ToString("X");
     }
 
     private string BuildPointerExpression(PointerPath path)
@@ -916,7 +973,7 @@ public partial class PointerScanWindow : Window
             baseText = $"0x{path.BaseAddress:X}";
         }
 
-        var offsetText = string.Join(", ", path.Offsets.Select(x => $"0x{x:X}"));
+        var offsetText = string.Join(", ", path.Offsets.Select(FormatOffset));
         return $"{baseText} -> [{offsetText}]";
     }
 
@@ -1173,7 +1230,8 @@ public partial class PointerScanWindow : Window
             PointerBaseModuleName = path.BaseModuleName,
             PointerBaseModuleOffset = path.BaseModuleOffset,
             DataType = _selectedValueDataType,
-            Offsets = new ObservableCollection<int>(path.Offsets)
+            Offsets = new ObservableCollection<int>(path.Offsets),
+            PointerSizeBytes = path.PointerSizeBytes
         };
 
         return _memoryAccessor.TryResolveWatchAddress(entry, out finalAddress, out _);
@@ -1191,7 +1249,8 @@ public partial class PointerScanWindow : Window
             PointerBaseModuleName = path.BaseModuleName,
             PointerBaseModuleOffset = path.BaseModuleOffset,
             DataType = _selectedValueDataType,
-            Offsets = new ObservableCollection<int>(path.Offsets)
+            Offsets = new ObservableCollection<int>(path.Offsets),
+            PointerSizeBytes = path.PointerSizeBytes
         };
 
         if (!_memoryAccessor.TryResolveWatchAddress(entry, out var finalAddress, out _))
@@ -1247,7 +1306,24 @@ public partial class PointerScanWindow : Window
         var updateMs = UiUpdateRoutineSettings.ValueRefreshIntervalMs;
         var limitText = _runtimeOptions.UseResultLimit ? _runtimeOptions.MaxResults.ToString(CultureInfo.InvariantCulture) : "off";
         var processBaseOnlyText = _runtimeOptions.RequireStaticRoot ? "on" : "off";
-        PointerOptionsText.Text = $"Options: Type {_selectedValueDataType}, Threads {_runtimeOptions.ThreadCount}, Limit {limitText}, Process+Base only {processBaseOnlyText}, Preset d{_runtimeOptions.MaxDepth}/off{_runtimeOptions.MaxOffset}/a{_runtimeOptions.Alignment}, Update {updateMs} ms";
+        var readOnlyText = _runtimeOptions.ExcludeReadOnlyNodes ? "on" : "off";
+        var loopText = _runtimeOptions.NoLoopingPointers ? "on" : "off";
+        var stopStaticText = _runtimeOptions.StopTraversingAfterStaticRoot ? "on" : "off";
+        var dedupeText = _runtimeOptions.AggressiveNodeDeduplication ? "on" : "off";
+        var negativeOffsetsText = _runtimeOptions.AllowNegativeOffsets ? "on" : "off";
+        var widthText = _runtimeOptions.PointerWidthMode switch
+        {
+            PointerValueWidthMode.Force32Bit => "32-bit",
+            PointerValueWidthMode.Force64Bit => "64-bit",
+            _ => "auto"
+        };
+
+        var rangeText = _runtimeOptions.UseAddressRange
+            ? $"0x{_runtimeOptions.AddressRangeFrom:X}-0x{_runtimeOptions.AddressRangeTo:X}"
+            : "off";
+        var rootInRangeText = _runtimeOptions.RequireRootInAddressRange ? "on" : "off";
+        var allNodesInRangeText = _runtimeOptions.RequireAllNodesInAddressRange ? "on" : "off";
+        PointerOptionsText.Text = $"Options: Type {_selectedValueDataType}, Threads {_runtimeOptions.ThreadCount}, Limit {limitText}, Width {widthText}, Range {rangeText}, RootInRange {rootInRangeText}, AllNodesInRange {allNodesInRangeText}, Process+Base only {processBaseOnlyText}, RO nodes off {readOnlyText}, No loops {loopText}, Stop@static {stopStaticText}, Dedupe {dedupeText}, NegOff {negativeOffsetsText}, Preset d{_runtimeOptions.MaxDepth}/off{_runtimeOptions.MaxOffset}/a{_runtimeOptions.Alignment}, Update {updateMs} ms";
     }
 
     private void UpdateWindowTitle()
@@ -1301,7 +1377,7 @@ public partial class PointerScanWindow : Window
         public PointerPathRow(PointerPath path)
         {
             Path = path;
-            OffsetsDisplay = string.Join(", ", path.Offsets.Select(x => $"0x{x:X}"));
+            OffsetsDisplay = string.Join(", ", path.Offsets.Select(PointerScanWindow.FormatOffset));
         }
 
         public PointerPath Path { get; }
@@ -1383,6 +1459,16 @@ public partial class PointerScanWindow : Window
         public List<PointerPath> Results { get; set; } = new();
     }
 }
+
+
+
+
+
+
+
+
+
+
 
 
 

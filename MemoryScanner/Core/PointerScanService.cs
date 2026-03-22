@@ -1,6 +1,7 @@
 using MemoryScanner.Models;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 
 namespace MemoryScanner.Core;
@@ -35,16 +36,42 @@ public sealed class PointerScanService
 
         var regions = _regionEnumerator.Enumerate(_memory.Process, options.IncludePrivate, options.IncludeModuleImage, options.IncludeMapped);
         var slices = SliceRegions(regions, RegionSliceSize);
+
+        var hasAddressRange = options.TryGetNormalizedAddressRange(out var rangeMin, out var rangeMax);
+        if (hasAddressRange)
+        {
+            slices = FilterSlicesByRange(slices, rangeMin, rangeMax);
+            if (slices.Count == 0)
+            {
+                ReportProgress(progress, 1, 1, "Pointer scan finished (range has no readable regions)");
+                return results;
+            }
+
+            if (options.RequireAllNodesInAddressRange && !IsAddressInRange(targetAddress, rangeMin, rangeMax))
+            {
+                ReportProgress(progress, 1, 1, "Pointer scan finished (target outside required range)");
+                return results;
+            }
+        }
+
         var frontier = new List<PointerChainNode>
         {
-            new() { CurrentAddress = targetAddress, Offsets = new List<int>() }
+            new()
+            {
+                CurrentAddress = targetAddress,
+                Offsets = new List<int>(),
+                TraversedAddresses = options.NoLoopingPointers ? new[] { targetAddress } : Array.Empty<ulong>()
+            }
         };
 
-        var visited = new HashSet<(ulong ParentAddress, int Depth)>();
+        var visited = options.AggressiveNodeDeduplication
+            ? new HashSet<(ulong ParentAddress, int Depth)>()
+            : null;
         int limitReached = 0;
         var resultLimit = options.UseResultLimit ? options.NormalizedResultLimit() : int.MaxValue;
+        int pointerSizeBytes = ResolvePointerSizeBytes(options);
 
-        long regionSteps = CalculateRegionSteps(slices, options.Alignment);
+        long regionSteps = CalculateRegionSteps(slices, options.Alignment, pointerSizeBytes);
         long processedWork = 0;
         long totalWorkEstimate = Math.Max(1, SaturatingMultiply(regionSteps, Math.Max(1, options.MaxDepth)));
 
@@ -77,6 +104,7 @@ public sealed class PointerScanService
                 sortedTargets,
                 options,
                 slices,
+                pointerSizeBytes,
                 cancellationToken,
                 delta =>
                 {
@@ -123,8 +151,16 @@ public sealed class PointerScanService
                             break;
                         }
 
-                        var key = (parent.ParentAddress, depth);
-                        if (!visited.Add(key))
+                        if (visited is not null)
+                        {
+                            var key = (parent.ParentAddress, depth);
+                            if (!visited.Add(key))
+                            {
+                                continue;
+                            }
+                        }
+
+                        if (options.NoLoopingPointers && Array.IndexOf(node.TraversedAddresses, parent.ParentAddress) >= 0)
                         {
                             continue;
                         }
@@ -132,15 +168,29 @@ public sealed class PointerScanService
                         var offsets = new List<int>(node.Offsets.Count + 1) { parent.Offset };
                         offsets.AddRange(node.Offsets);
 
+                        var traversedAddresses = options.NoLoopingPointers
+                            ? BuildExtendedTrail(node.TraversedAddresses, parent.ParentAddress)
+                            : Array.Empty<ulong>();
+
                         var chainNode = new PointerChainNode
                         {
                             CurrentAddress = parent.ParentAddress,
-                            Offsets = offsets
+                            Offsets = offsets,
+                            TraversedAddresses = traversedAddresses
                         };
 
-                        nextFrontier.Add(chainNode);
+                        if (hasAddressRange && options.RequireAllNodesInAddressRange && !IsAddressInRange(chainNode.CurrentAddress, rangeMin, rangeMax))
+                        {
+                            continue;
+                        }
 
-                        if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, out var path))
+                        var hasStaticRoot = IsStaticAddress(chainNode.CurrentAddress);
+                        if (!(options.StopTraversingAfterStaticRoot && hasStaticRoot))
+                        {
+                            nextFrontier.Add(chainNode);
+                        }
+
+                        if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, pointerSizeBytes, hasAddressRange, options.RequireRootInAddressRange, rangeMin, rangeMax, out var path))
                         {
                             if (results.Count < resultLimit)
                             {
@@ -176,6 +226,7 @@ public sealed class PointerScanService
         ulong[] sortedTargetAddresses,
         PointerScanOptions options,
         IReadOnlyList<ScanSlice> slices,
+        int pointerSizeBytes,
         CancellationToken cancellationToken,
         Action<long>? progressDelta)
     {
@@ -203,19 +254,24 @@ public sealed class PointerScanService
                 int currentChunkSize = InitialReadChunkSize;
                 int alignment = Math.Max(1, options.Alignment);
 
+                if (options.ExcludeReadOnlyNodes && !slice.IsWritable)
+                {
+                    return local;
+                }
+
                 while (cursor < slice.End)
                 {
                     parallelOptions.CancellationToken.ThrowIfCancellationRequested();
 
                     ulong remaining = slice.End - cursor;
                     int primaryChunkSize = (int)Math.Min((ulong)currentChunkSize, remaining);
-                    int readCount = primaryChunkSize + sizeof(long) - 1;
+                    int readCount = primaryChunkSize + pointerSizeBytes - 1;
                     if ((ulong)readCount > remaining)
                     {
                         readCount = (int)remaining;
                     }
 
-                    if (!_memory.TryReadBytes(cursor, readCount, out var block) || block.Length < sizeof(long))
+                    if (!_memory.TryReadBytes(cursor, readCount, out var block) || block.Length < pointerSizeBytes)
                     {
                         currentChunkSize = Math.Max(MinReadChunkSize, currentChunkSize / 2);
                         cursor += (ulong)Math.Max(MinReadChunkSize, primaryChunkSize);
@@ -224,7 +280,7 @@ public sealed class PointerScanService
 
                     var span = block.AsSpan();
                     int primaryCount = Math.Min(primaryChunkSize, block.Length);
-                    int maxPosExclusive = Math.Min(primaryCount, span.Length - sizeof(long) + 1);
+                    int maxPosExclusive = Math.Min(primaryCount, span.Length - pointerSizeBytes + 1);
 
                     for (int pos = 0; pos < maxPosExclusive; pos += alignment)
                     {
@@ -233,9 +289,11 @@ public sealed class PointerScanService
                             break;
                         }
 
-                        var pointerValue = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(pos, sizeof(long)));
+                        ulong pointerValue = pointerSizeBytes == 4
+                            ? BinaryPrimitives.ReadUInt32LittleEndian(span.Slice(pos, sizeof(uint)))
+                            : BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(pos, sizeof(ulong)));
                         var parentAddress = cursor + (ulong)pos;
-                        AddMatchesForPointerValue(sortedTargetAddresses, pointerValue, parentAddress, options.MaxOffset, local);
+                        AddMatchesForPointerValue(sortedTargetAddresses, pointerValue, parentAddress, options.MaxOffset, options.AllowNegativeOffsets, local);
 
                         local.PendingProgress++;
                         if ((local.PendingProgress & 4095) == 0)
@@ -286,21 +344,47 @@ public sealed class PointerScanService
         ulong pointerValue,
         ulong parentAddress,
         int maxOffset,
+        bool allowNegativeOffsets,
         LocalParentCollector local)
     {
-        int startIndex = LowerBound(sortedTargetAddresses, pointerValue);
         ulong maxDelta = (ulong)Math.Max(0, maxOffset);
-
-        for (int i = startIndex; i < sortedTargetAddresses.Length; i++)
+        if (!allowNegativeOffsets)
         {
-            ulong childAddress = sortedTargetAddresses[i];
-            ulong delta = childAddress - pointerValue;
-            if (delta > maxDelta)
+            int startIndex = LowerBound(sortedTargetAddresses, pointerValue);
+            for (int i = startIndex; i < sortedTargetAddresses.Length; i++)
             {
-                break;
+                ulong childAddress = sortedTargetAddresses[i];
+                ulong delta = childAddress - pointerValue;
+                if (delta > maxDelta)
+                {
+                    break;
+                }
+
+                local.AddCandidate(childAddress, parentAddress, (int)delta);
             }
 
-            local.AddCandidate(childAddress, parentAddress, (int)delta);
+            return;
+        }
+
+        ulong minTarget = pointerValue > maxDelta ? pointerValue - maxDelta : 0;
+        ulong maxTarget = pointerValue > ulong.MaxValue - maxDelta ? ulong.MaxValue : pointerValue + maxDelta;
+
+        int rangeStart = LowerBound(sortedTargetAddresses, minTarget);
+        int rangeEnd = UpperBound(sortedTargetAddresses, maxTarget);
+
+        for (int i = rangeStart; i < rangeEnd; i++)
+        {
+            ulong childAddress = sortedTargetAddresses[i];
+            long signedDelta = childAddress >= pointerValue
+                ? (long)(childAddress - pointerValue)
+                : -(long)(pointerValue - childAddress);
+
+            if (signedDelta < int.MinValue || signedDelta > int.MaxValue)
+            {
+                continue;
+            }
+
+            local.AddCandidate(childAddress, parentAddress, (int)signedDelta);
         }
     }
 
@@ -313,6 +397,27 @@ public sealed class PointerScanService
         {
             int middle = left + ((right - left) >> 1);
             if (sortedValues[middle] < value)
+            {
+                left = middle + 1;
+            }
+            else
+            {
+                right = middle;
+            }
+        }
+
+        return left;
+    }
+
+    private static int UpperBound(ulong[] sortedValues, ulong value)
+    {
+        int left = 0;
+        int right = sortedValues.Length;
+
+        while (left < right)
+        {
+            int middle = left + ((right - left) >> 1);
+            if (sortedValues[middle] <= value)
             {
                 left = middle + 1;
             }
@@ -381,9 +486,36 @@ public sealed class PointerScanService
         ReportProgress(progress, processed, total, status);
     }
 
-    private bool TryMakeResult(PointerChainNode chainNode, ulong targetAddress, bool requireStaticRoot, out PointerPath path)
+    private bool IsStaticAddress(ulong address)
+    {
+        return _memory.Modules.Any(m => m.Contains(address));
+    }
+
+    private static ulong[] BuildExtendedTrail(ulong[] previousTrail, ulong nextAddress)
+    {
+        var result = new ulong[previousTrail.Length + 1];
+        result[0] = nextAddress;
+        if (previousTrail.Length > 0)
+        {
+            Array.Copy(previousTrail, 0, result, 1, previousTrail.Length);
+        }
+
+        return result;
+    }
+
+    private static string FormatOffset(int offset)
+    {
+        return offset < 0 ? "-0x" + Math.Abs(offset).ToString("X") : "0x" + offset.ToString("X");
+    }
+
+    private bool TryMakeResult(PointerChainNode chainNode, ulong targetAddress, bool requireStaticRoot, int pointerSizeBytes, bool hasAddressRange, bool requireRootInAddressRange, ulong rangeMin, ulong rangeMax, out PointerPath path)
     {
         path = new PointerPath();
+
+        if (hasAddressRange && requireRootInAddressRange && !IsAddressInRange(chainNode.CurrentAddress, rangeMin, rangeMax))
+        {
+            return false;
+        }
 
         var module = _memory.Modules.FirstOrDefault(m => m.Contains(chainNode.CurrentAddress));
         var isStaticRoot = module is not null;
@@ -407,10 +539,11 @@ public sealed class PointerScanService
             baseExpression = $"0x{chainNode.CurrentAddress:X}";
         }
 
-        var offsetText = string.Join(", ", chainNode.Offsets.Select(x => $"0x{x:X}"));
+        var offsetText = string.Join(", ", chainNode.Offsets.Select(FormatOffset));
         path = new PointerPath
         {
             BaseAddress = chainNode.CurrentAddress,
+            PointerSizeBytes = pointerSizeBytes,
             BaseModuleName = moduleName,
             BaseModuleOffset = moduleOffset,
             Offsets = chainNode.Offsets,
@@ -420,6 +553,31 @@ public sealed class PointerScanService
         return true;
     }
 
+    private static IReadOnlyList<ScanSlice> FilterSlicesByRange(IReadOnlyList<ScanSlice> slices, ulong rangeMin, ulong rangeMax)
+    {
+        var filtered = new List<ScanSlice>(slices.Count);
+        foreach (var slice in slices)
+        {
+            var start = slice.Start < rangeMin ? rangeMin : slice.Start;
+
+            ulong rangeEndExclusive = rangeMax == ulong.MaxValue ? ulong.MaxValue : rangeMax + 1;
+            var end = slice.End > rangeEndExclusive ? rangeEndExclusive : slice.End;
+
+            if (end <= start)
+            {
+                continue;
+            }
+
+            filtered.Add(new ScanSlice(start, end, slice.IsWritable));
+        }
+
+        return filtered;
+    }
+
+    private static bool IsAddressInRange(ulong address, ulong rangeMin, ulong rangeMax)
+    {
+        return address >= rangeMin && address <= rangeMax;
+    }
     private static IReadOnlyList<ScanSlice> SliceRegions(IReadOnlyList<MemoryRegion> regions, ulong sliceSize)
     {
         var slices = new List<ScanSlice>(regions.Count);
@@ -434,14 +592,14 @@ public sealed class PointerScanService
 
             if (region.RegionSize <= sliceSize)
             {
-                slices.Add(new ScanSlice(start, end));
+                slices.Add(new ScanSlice(start, end, region.IsWritable));
                 continue;
             }
 
             for (ulong cursor = start; cursor < end;)
             {
                 ulong next = Math.Min(end, cursor + sliceSize);
-                slices.Add(new ScanSlice(cursor, next));
+                slices.Add(new ScanSlice(cursor, next, region.IsWritable));
                 cursor = next;
             }
         }
@@ -449,13 +607,13 @@ public sealed class PointerScanService
         return slices;
     }
 
-    private static long CalculateRegionSteps(IReadOnlyList<ScanSlice> slices, int alignment)
+    private static long CalculateRegionSteps(IReadOnlyList<ScanSlice> slices, int alignment, int pointerSizeBytes)
     {
         long total = 0;
         foreach (var slice in slices)
         {
             var size = (long)(slice.End - slice.Start);
-            var span = size - sizeof(long) + 1;
+            var span = size - pointerSizeBytes + 1;
             if (span <= 0)
             {
                 continue;
@@ -477,6 +635,19 @@ public sealed class PointerScanService
         });
     }
 
+    private int ResolvePointerSizeBytes(PointerScanOptions options)
+    {
+        return options.PointerWidthMode switch
+        {
+            PointerValueWidthMode.Force32Bit => 4,
+            PointerValueWidthMode.Force64Bit => 8,
+            _ => IsWow64Process(_memory.Process.Handle, out var wow64) && wow64 ? 4 : 8
+        };
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsWow64Process(IntPtr processHandle, out bool wow64Process);
+
     private sealed class PointerParentCandidate
     {
         public ulong ParentAddress { get; set; }
@@ -487,6 +658,7 @@ public sealed class PointerScanService
     {
         public ulong CurrentAddress { get; set; }
         public List<int> Offsets { get; set; } = new();
+        public ulong[] TraversedAddresses { get; set; } = Array.Empty<ulong>();
     }
 
     private sealed class LocalParentCollector
@@ -510,7 +682,36 @@ public sealed class PointerScanService
         }
     }
 
-    private readonly record struct ScanSlice(ulong Start, ulong End);
+    private readonly record struct ScanSlice(ulong Start, ulong End, bool IsWritable);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 

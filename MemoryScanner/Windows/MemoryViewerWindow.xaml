@@ -1,0 +1,107 @@
+<Window x:Class="MemoryScanner.Windows.MemoryViewerWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Memory Viewer" Height="760" Width="1220" MinHeight="560" MinWidth="900" WindowStartupLocation="CenterOwner">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="220"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="90"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="110"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="100"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0" Text="Start Address" VerticalAlignment="Center"/>
+            <TextBox x:Name="AddressText" Grid.Column="1" Margin="6,0,12,0" VerticalContentAlignment="Center"/>
+
+            <TextBlock Grid.Column="2" Text="Bytes" VerticalAlignment="Center"/>
+            <TextBox x:Name="ByteCountText" Grid.Column="3" Margin="6,0,12,0" VerticalContentAlignment="Center" Text="1024"/>
+
+            <TextBlock Grid.Column="4" Text="Bytes/Row" VerticalAlignment="Center"/>
+            <ComboBox x:Name="BytesPerRowBox" Grid.Column="5" Margin="6,0,12,0" VerticalContentAlignment="Center"/>
+
+            <TextBlock Grid.Column="6" Text="Refresh (ms)" VerticalAlignment="Center"/>
+            <TextBox x:Name="RefreshMsText" Grid.Column="7" Margin="6,0,12,0" VerticalContentAlignment="Center" Text="200"/>
+
+            <Button Grid.Column="8" Content="Apply" Width="90" Height="30" Margin="0,0,8,0" Click="Apply_OnClick"/>
+            <Button Grid.Column="9" Content="Refresh" Width="90" Height="30" Margin="0,0,8,0" Click="RefreshNow_OnClick"/>
+            <Button Grid.Column="10" Content="Close" Width="90" Height="30" IsCancel="True"/>
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="40"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="220"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <Button Grid.Column="0" Width="38" Height="30" Margin="0,0,8,0" Click="PrevPage_OnClick" ToolTip="Previous Page">
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72B;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Button>
+            <Button Grid.Column="1" Width="38" Height="30" Margin="0,0,8,0" Click="NextPage_OnClick" ToolTip="Next Page">
+                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+            </Button>
+            <TextBlock x:Name="PageInfoText" Grid.Column="2" VerticalAlignment="Center" Margin="0,0,12,0" Foreground="#FF444444" Text="0x0 .. 0x0"/>
+
+            <TextBlock Grid.Column="4" Text="Patch Address" VerticalAlignment="Center"/>
+            <TextBox x:Name="PatchAddressText" Grid.Column="5" Margin="6,0,12,0" VerticalContentAlignment="Center"/>
+
+            <TextBlock Grid.Column="6" Text="Patch Bytes (hex)" VerticalAlignment="Center"/>
+            <TextBox x:Name="PatchBytesText" Grid.Column="7" Margin="6,0,12,0" VerticalContentAlignment="Center" ToolTip="Example: 90 90 90 or FF 15 3A"/>
+
+            <Button Grid.Column="8" Width="110" Height="30" Content="Write Bytes" Click="WriteBytes_OnClick"/>
+        </Grid>
+
+        <DataGrid x:Name="MemoryGrid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  IsReadOnly="True"
+                  SelectionMode="Single"
+                  EnableRowVirtualization="True"
+                  EnableColumnVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True"
+                  Background="#FF242424"
+                  Foreground="#FFF0F0F0"
+                  RowBackground="#FF242424"
+                  AlternatingRowBackground="#FF292929"
+                  BorderThickness="0"
+                  SelectionChanged="MemoryGrid_OnSelectionChanged">
+            <DataGrid.ColumnHeaderStyle>
+                <Style TargetType="DataGridColumnHeader">
+                    <Setter Property="Foreground" Value="Black"/>
+                </Style>
+            </DataGrid.ColumnHeaderStyle>
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Address" Binding="{Binding DisplayAddress}" Width="2.0*"/>
+                <DataGridTextColumn Header="Hex Bytes" Binding="{Binding HexBytes}" Width="3.4*"/>
+                <DataGridTextColumn Header="ASCII" Binding="{Binding AsciiText}" Width="1.8*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <TextBlock x:Name="StatusText" Grid.Row="3" Margin="0,8,0,0" Foreground="#FF444444" Text="Ready"/>
+    </Grid>
+</Window>

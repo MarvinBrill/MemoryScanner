@@ -187,9 +187,16 @@ static class MemoryUtils
     public static uint OffsetCalculator(MemoryHelper32 TargetMemory, uint BaseAddress, int[] Offsets)
     {
         var address = BaseAddress;
-        foreach (uint offset in Offsets)
+        foreach (var offset in Offsets)
         {
-            address = TargetMemory.ReadMemory<uint>(address) + offset;
+            var pointerValue = TargetMemory.ReadMemory<uint>(address);
+            var next = (long)pointerValue + offset;
+            if (next < 0 || next > uint.MaxValue)
+            {
+                return 0;
+            }
+
+            address = (uint)next;
         }
 
         return address;
@@ -198,9 +205,10 @@ static class MemoryUtils
     public static ulong OffsetCalculator(MemoryHelper64 TargetMemory, ulong BaseAddress, int[] Offsets)
     {
         var address = BaseAddress;
-        foreach (uint offset in Offsets)
+        foreach (var offset in Offsets)
         {
-            address = TargetMemory.ReadMemory<ulong>(address) + offset;
+            var pointerValue = TargetMemory.ReadMemory<ulong>(address);
+            address = unchecked((ulong)((long)pointerValue + offset));
         }
 
         return address;
@@ -237,3 +245,6 @@ public static class ObjectType
         }
     }
 }
+
+
+

@@ -1,4 +1,4 @@
-﻿using MemoryScanner.Models;
+using MemoryScanner.Models;
 using System.Text.Json;
 using System.IO;
 
@@ -40,6 +40,7 @@ public sealed class ProfileStorageService
             DataType = entry.DataType,
             DirectAddress = entry.DirectAddress,
             PointerBaseAddress = entry.PointerBaseAddress,
+            PointerSizeBytes = entry.PointerSizeBytes,
             PointerBaseModuleName = entry.PointerBaseModuleName,
             PointerBaseModuleOffset = entry.PointerBaseModuleOffset,
             Offsets = entry.Offsets.ToList(),
@@ -58,6 +59,7 @@ public sealed class ProfileStorageService
             DataType = dto.DataType,
             DirectAddress = dto.DirectAddress,
             PointerBaseAddress = dto.PointerBaseAddress,
+            PointerSizeBytes = dto.PointerSizeBytes,
             PointerBaseModuleName = dto.PointerBaseModuleName,
             PointerBaseModuleOffset = dto.PointerBaseModuleOffset,
             Offsets = new System.Collections.ObjectModel.ObservableCollection<int>(dto.Offsets),
@@ -80,6 +82,7 @@ public sealed class ProfileStorageService
         public MemoryDataType DataType { get; set; } = MemoryDataType.Int32;
         public ulong DirectAddress { get; set; }
         public ulong PointerBaseAddress { get; set; }
+        public int PointerSizeBytes { get; set; }
         public string PointerBaseModuleName { get; set; } = string.Empty;
         public ulong PointerBaseModuleOffset { get; set; }
         public List<int> Offsets { get; set; } = new();
@@ -87,4 +90,6 @@ public sealed class ProfileStorageService
         public string FreezeValueText { get; set; } = string.Empty;
     }
 }
+
+
 

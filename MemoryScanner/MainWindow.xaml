@@ -74,6 +74,7 @@
                               AutoGenerateColumns="False"
                               SelectionMode="Single"
                               CanUserAddRows="False"
+                              AllowDrop="True"
                               EnableRowVirtualization="True"
                               EnableColumnVirtualization="True"
                               VirtualizingPanel.IsVirtualizing="True"
@@ -86,6 +87,10 @@
                               AlternatingRowBackground="#FF292929"
                               BorderThickness="0"
                               ScrollViewer.ScrollChanged="WatchGrid_OnScrollChanged"
+                              PreviewMouseLeftButtonDown="WatchGrid_OnPreviewMouseLeftButtonDown"
+                              MouseMove="WatchGrid_OnMouseMove"
+                              DragOver="WatchGrid_OnDragOver"
+                              Drop="WatchGrid_OnDrop"
                               MouseDoubleClick="WatchGrid_OnMouseDoubleClick">
                         <DataGrid.ColumnHeaderStyle>
                             <Style TargetType="DataGridColumnHeader">
@@ -110,7 +115,9 @@
                                 <MenuItem Header="Copy Address" Click="CopyWatchAddress_OnClick"/>
                                 <Separator/>
                                 <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
-                                <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromWatch_OnClick"/>
+                                <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromWatch_OnClick"/>
+                                <MenuItem Header="Open Memory Viewer" Click="OpenMemoryViewerFromWatch_OnClick"/>
+                                <MenuItem Header="Find out what writes/accesses this address" Click="FindWriteAccessFromWatch_OnClick"/>
                             </ContextMenu>
                         </DataGrid.ContextMenu>
                         <DataGrid.Columns>
@@ -247,7 +254,9 @@
                         </DataGrid.ColumnHeaderStyle>
                         <DataGrid.ContextMenu>
                             <ContextMenu>
-                                <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromScanResult_OnClick"/>
+                                <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromScanResult_OnClick"/>
+                                <MenuItem Header="Open Memory Viewer" Click="OpenMemoryViewerFromScanResult_OnClick"/>
+                                <MenuItem Header="Find out what writes/accesses this address" Click="FindWriteAccessFromScanResult_OnClick"/>
                             </ContextMenu>
                         </DataGrid.ContextMenu>
                         <DataGrid.Columns>
@@ -300,3 +309,6 @@
         </Grid>
     </Grid>
 </Window>
+
+
+

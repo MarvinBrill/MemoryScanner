@@ -13,6 +13,7 @@ public partial class AddWatchEntryWindow : Window
     private bool _addressOnlyEditMode;
     private string _preferredModuleName = string.Empty;
     private ulong _fallbackBaseAddress;
+    private int _pointerSizeBytesHint;
 
     public WatchEntry? CreatedEntry { get; private set; }
 
@@ -51,6 +52,7 @@ public partial class AddWatchEntryWindow : Window
 
         _preferredModuleName = pointerPath.BaseModuleName;
         _fallbackBaseAddress = pointerPath.BaseAddress;
+        _pointerSizeBytesHint = pointerPath.PointerSizeBytes;
         AddressText.Text = FormatPointerBaseInput(pointerPath.BaseAddress, pointerPath.BaseModuleName, pointerPath.BaseModuleOffset);
         OffsetsText.Text = AddressParser.OffsetsToText(pointerPath.Offsets);
 
@@ -132,6 +134,7 @@ public partial class AddWatchEntryWindow : Window
         }
 
         _preferredModuleName = pointerBaseModuleName;
+        _pointerSizeBytesHint = entry.PointerSizeBytes;
 
         AddressText.Text = FormatPointerBaseInput(pointerBaseAddress, pointerBaseModuleName, pointerBaseModuleOffset);
         OffsetsText.Text = entry.Kind == WatchEntryKind.PointerChain
@@ -452,7 +455,8 @@ public partial class AddWatchEntryWindow : Window
                 PointerBaseAddress = baseAddress,
                 PointerBaseModuleName = moduleName,
                 PointerBaseModuleOffset = moduleOffset,
-                Offsets = new ObservableCollection<int>(offsets)
+                Offsets = new ObservableCollection<int>(offsets),
+                PointerSizeBytes = _pointerSizeBytesHint
             };
         }
 
@@ -465,6 +469,8 @@ public partial class AddWatchEntryWindow : Window
         DialogResult = true;
     }
 }
+
+
 
 
 
