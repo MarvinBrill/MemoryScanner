@@ -17,7 +17,7 @@ public partial class PointerScanOptionsWindow : Window
         _current = current;
 
         MaxDepthText.Text = current.MaxDepth.ToString(CultureInfo.InvariantCulture);
-        MaxOffsetText.Text = current.MaxOffset.ToString(CultureInfo.InvariantCulture);
+        MaxOffsetBox.Text = current.MaxOffset.ToString(CultureInfo.InvariantCulture);
         ThreadCountText.Text = current.ThreadCount.ToString(CultureInfo.InvariantCulture);
         UseResultLimitBox.IsChecked = current.UseResultLimit;
         ResultLimitText.Text = current.MaxResults.ToString(CultureInfo.InvariantCulture);
@@ -54,7 +54,7 @@ public partial class PointerScanOptionsWindow : Window
             return;
         }
 
-        if (!int.TryParse(MaxOffsetText.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out var maxOffset) || maxOffset < 0)
+        if (!int.TryParse(MaxOffsetBox.Text?.Trim(), NumberStyles.Integer, CultureInfo.InvariantCulture, out var maxOffset) || maxOffset < 0)
         {
             MessageBox.Show(this, "Max offset must be 0 or greater.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
@@ -102,3 +102,4 @@ public partial class PointerScanOptionsWindow : Window
         DialogResult = true;
     }
 }
+

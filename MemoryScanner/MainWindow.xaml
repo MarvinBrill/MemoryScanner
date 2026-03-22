@@ -101,6 +101,7 @@
                                 <MenuItem Header="Edit Address/Pointer..." Click="EditWatchAddressPointer_OnClick"/>
                                 <MenuItem Header="Edit Data Type..." Click="EditWatchDataType_OnClick"/>
                                 <MenuItem Header="Write Value..." Click="WriteValueFromContext_OnClick"/>
+                                <MenuItem Header="Copy Address" Click="CopyWatchAddress_OnClick"/>
                                 <Separator/>
                                 <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
                                 <MenuItem Header="Show memory region" Click="ShowMemoryRegionFromWatch_OnClick"/>
@@ -286,5 +287,6 @@
         </Grid>
     </Grid>
 </Window>
+
 
 

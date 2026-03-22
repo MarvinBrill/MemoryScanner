@@ -30,7 +30,15 @@
             <TextBox x:Name="MaxDepthText" Grid.Row="0" Grid.Column="1" Margin="0,0,0,8"/>
 
             <TextBlock Grid.Row="1" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Max Offset"/>
-            <TextBox x:Name="MaxOffsetText" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8"/>
+            <ComboBox x:Name="MaxOffsetBox" Grid.Row="1" Grid.Column="1" Margin="0,0,0,8" IsEditable="True">
+                <ComboBoxItem Content="1024"/>
+                <ComboBoxItem Content="2048"/>
+                <ComboBoxItem Content="4096"/>
+                <ComboBoxItem Content="8192"/>
+                <ComboBoxItem Content="16384"/>
+                <ComboBoxItem Content="32768"/>
+                <ComboBoxItem Content="65536"/>
+            </ComboBox>
 
             <TextBlock Grid.Row="2" Grid.Column="0" Margin="0,0,8,8" VerticalAlignment="Center" Text="Alignment"/>
             <ComboBox x:Name="AlignmentBox" Grid.Row="2" Grid.Column="1" Margin="0,0,0,8">
@@ -49,7 +57,7 @@
             <CheckBox x:Name="IncludePrivateBox" Grid.Row="6" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Private"/>
             <CheckBox x:Name="IncludeMappedBox" Grid.Row="7" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Mapped"/>
             <CheckBox x:Name="IncludeImageBox" Grid.Row="8" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Include Image/Module"/>
-            <CheckBox x:Name="RequireStaticRootBox" Grid.Row="9" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Require Static Root"/>
+            <CheckBox x:Name="RequireStaticRootBox" Grid.Row="9" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Only Process+Base results (static roots)"/>
         </Grid>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
@@ -58,3 +66,5 @@
         </StackPanel>
     </Grid>
 </Window>
+
+

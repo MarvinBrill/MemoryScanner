@@ -28,7 +28,10 @@ public sealed class PointerScanService
         CancellationToken cancellationToken)
     {
         var results = new List<PointerPath>();
-        if (!_memory.IsAttached) return results;
+        if (!_memory.IsAttached)
+        {
+            return results;
+        }
 
         var regions = _regionEnumerator.Enumerate(_memory.Process, options.IncludePrivate, options.IncludeModuleImage, options.IncludeMapped);
         var slices = SliceRegions(regions, RegionSliceSize);
@@ -37,13 +40,13 @@ public sealed class PointerScanService
             new() { CurrentAddress = targetAddress, Offsets = new List<int>() }
         };
 
-        var visited = new HashSet<(ulong, int)>();
+        var visited = new HashSet<(ulong ParentAddress, int Depth)>();
         int limitReached = 0;
         var resultLimit = options.UseResultLimit ? options.NormalizedResultLimit() : int.MaxValue;
 
         long regionSteps = CalculateRegionSteps(slices, options.Alignment);
         long processedWork = 0;
-        long totalWorkEstimate = Math.Max(1, regionSteps);
+        long totalWorkEstimate = Math.Max(1, SaturatingMultiply(regionSteps, Math.Max(1, options.MaxDepth)));
 
         var progressGate = new object();
         long lastReportTicks = 0;
@@ -57,129 +60,301 @@ public sealed class PointerScanService
                 break;
             }
 
-            var nextFrontier = new List<PointerChainNode>(Math.Max(128, frontier.Count * 2));
-            int frontierCount = Math.Max(1, frontier.Count);
-            var status = $"Pointer scan d{depth + 1}/{options.MaxDepth} frontier {frontier.Count}";
+            if (frontier.Count == 0)
+            {
+                break;
+            }
 
-            for (int nodeIndex = 0; nodeIndex < frontier.Count; nodeIndex++)
+            var groupedFrontier = GroupFrontierByAddress(frontier);
+            var sortedTargets = groupedFrontier.Keys.OrderBy(x => x).ToArray();
+            if (sortedTargets.Length == 0)
+            {
+                break;
+            }
+
+            var status = $"Pointer scan d{depth + 1}/{options.MaxDepth} targets {sortedTargets.Length}";
+            var parentMap = FindParentsForTargets(
+                sortedTargets,
+                options,
+                slices,
+                cancellationToken,
+                delta =>
+                {
+                    var processedGlobal = Interlocked.Add(ref processedWork, delta);
+                    TryReportProgressThrottled(
+                        progress,
+                        progressGate,
+                        ref lastReportTicks,
+                        processedGlobal,
+                        totalWorkEstimate,
+                        status);
+                });
+
+            var nextFrontier = new List<PointerChainNode>(Math.Max(128, frontier.Count * 2));
+
+            foreach (var target in sortedTargets)
             {
                 if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                 {
                     break;
                 }
 
-                var node = frontier[nodeIndex];
+                if (!parentMap.TryGetValue(target, out var parents) || parents.Count == 0)
+                {
+                    continue;
+                }
 
-                var parentResult = FindParents(
-                    node.CurrentAddress,
-                    options,
-                    slices,
-                    cancellationToken,
-                    delta =>
-                    {
-                        var processedGlobal = Interlocked.Add(ref processedWork, delta);
-                        var totalEstimate = Math.Max(processedGlobal + 1, Volatile.Read(ref totalWorkEstimate));
+                if (!groupedFrontier.TryGetValue(target, out var nodesForTarget))
+                {
+                    continue;
+                }
 
-                        TryReportProgressThrottled(
-                            progress,
-                            progressGate,
-                            ref lastReportTicks,
-                            processedGlobal,
-                            totalEstimate,
-                            status);
-                    });
-
-                foreach (var parent in parentResult.Parents)
+                foreach (var node in nodesForTarget)
                 {
                     if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                     {
                         break;
                     }
 
-                    var key = (parent.ParentAddress, depth);
-                    if (!visited.Add(key))
+                    foreach (var parent in parents)
                     {
-                        continue;
-                    }
-
-                    var offsets = new List<int> { parent.Offset };
-                    offsets.AddRange(node.Offsets);
-
-                    var chainNode = new PointerChainNode
-                    {
-                        CurrentAddress = parent.ParentAddress,
-                        Offsets = offsets
-                    };
-
-                    nextFrontier.Add(chainNode);
-
-                    if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, out var path))
-                    {
-                        if (results.Count < resultLimit)
+                        if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                         {
-                            results.Add(path);
+                            break;
                         }
 
-                        if (results.Count >= resultLimit)
+                        var key = (parent.ParentAddress, depth);
+                        if (!visited.Add(key))
                         {
-                            Volatile.Write(ref limitReached, 1);
+                            continue;
+                        }
+
+                        var offsets = new List<int>(node.Offsets.Count + 1) { parent.Offset };
+                        offsets.AddRange(node.Offsets);
+
+                        var chainNode = new PointerChainNode
+                        {
+                            CurrentAddress = parent.ParentAddress,
+                            Offsets = offsets
+                        };
+
+                        nextFrontier.Add(chainNode);
+
+                        if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, out var path))
+                        {
+                            if (results.Count < resultLimit)
+                            {
+                                results.Add(path);
+                            }
+
+                            if (results.Count >= resultLimit)
+                            {
+                                Volatile.Write(ref limitReached, 1);
+                                break;
+                            }
                         }
                     }
                 }
-
-                var remainingCurrentNodes = Math.Max(0, frontierCount - nodeIndex - 1);
-                var knownPendingNodes = remainingCurrentNodes + Math.Max(0, nextFrontier.Count);
-                var knownPendingWork = knownPendingNodes * regionSteps;
-                long futureGuardWork = depth < options.MaxDepth - 1 ? regionSteps : 0;
-                long processedSnapshot = Volatile.Read(ref processedWork);
-                var estimateAfterNode = processedSnapshot + knownPendingWork + futureGuardWork;
-                RaiseTotalEstimate(ref totalWorkEstimate, estimateAfterNode);
-                ReportProgress(progress, processedSnapshot, Volatile.Read(ref totalWorkEstimate), status);
-            }
-
-            if (nextFrontier.Count > 0 && depth < options.MaxDepth - 1)
-            {
-                var nextDepthKnownWork = Math.Max(1, (long)nextFrontier.Count * regionSteps);
-                var processedSnapshot = Volatile.Read(ref processedWork);
-                RaiseTotalEstimate(ref totalWorkEstimate, processedSnapshot + nextDepthKnownWork);
-            }
-
-            ReportProgress(progress, Volatile.Read(ref processedWork), Volatile.Read(ref totalWorkEstimate), status);
-
-            if (nextFrontier.Count == 0)
-            {
-                break;
             }
 
             frontier = nextFrontier;
+            ReportProgress(progress, Volatile.Read(ref processedWork), totalWorkEstimate, status);
         }
 
-        var finalStatus = cancellationToken.IsCancellationRequested ? "Pointer scan canceled" : "Pointer scan finished";
-        var finalProcessed = Volatile.Read(ref processedWork);
+        var finalStatus = cancellationToken.IsCancellationRequested
+            ? "Pointer scan canceled"
+            : Volatile.Read(ref limitReached) == 1
+                ? "Pointer scan result limit reached"
+                : "Pointer scan finished";
+
+        var finalProcessed = Math.Max(1, Volatile.Read(ref processedWork));
         ReportProgress(progress, finalProcessed, finalProcessed, finalStatus);
         return results;
     }
 
-    private static void RaiseTotalEstimate(ref long totalEstimate, long candidate)
+    private Dictionary<ulong, List<PointerParentCandidate>> FindParentsForTargets(
+        ulong[] sortedTargetAddresses,
+        PointerScanOptions options,
+        IReadOnlyList<ScanSlice> slices,
+        CancellationToken cancellationToken,
+        Action<long>? progressDelta)
     {
-        if (candidate <= 0)
+        var mergedParents = new Dictionary<ulong, List<PointerParentCandidate>>(Math.Max(16, sortedTargetAddresses.Length));
+        if (sortedTargetAddresses.Length == 0 || slices.Count == 0)
         {
-            return;
+            return mergedParents;
         }
 
-        while (true)
+        var parallelOptions = new ParallelOptions
         {
-            var snapshot = Volatile.Read(ref totalEstimate);
-            if (candidate <= snapshot)
+            MaxDegreeOfParallelism = options.NormalizedThreadCount(),
+            CancellationToken = cancellationToken
+        };
+
+        var mergeLock = new object();
+
+        Parallel.ForEach(
+            slices,
+            parallelOptions,
+            () => new LocalParentCollector(),
+            (slice, _, local) =>
             {
-                return;
+                ulong cursor = slice.Start;
+                int currentChunkSize = InitialReadChunkSize;
+                int alignment = Math.Max(1, options.Alignment);
+
+                while (cursor < slice.End)
+                {
+                    parallelOptions.CancellationToken.ThrowIfCancellationRequested();
+
+                    ulong remaining = slice.End - cursor;
+                    int primaryChunkSize = (int)Math.Min((ulong)currentChunkSize, remaining);
+                    int readCount = primaryChunkSize + sizeof(long) - 1;
+                    if ((ulong)readCount > remaining)
+                    {
+                        readCount = (int)remaining;
+                    }
+
+                    if (!_memory.TryReadBytes(cursor, readCount, out var block) || block.Length < sizeof(long))
+                    {
+                        currentChunkSize = Math.Max(MinReadChunkSize, currentChunkSize / 2);
+                        cursor += (ulong)Math.Max(MinReadChunkSize, primaryChunkSize);
+                        continue;
+                    }
+
+                    var span = block.AsSpan();
+                    int primaryCount = Math.Min(primaryChunkSize, block.Length);
+                    int maxPosExclusive = Math.Min(primaryCount, span.Length - sizeof(long) + 1);
+
+                    for (int pos = 0; pos < maxPosExclusive; pos += alignment)
+                    {
+                        if (parallelOptions.CancellationToken.IsCancellationRequested)
+                        {
+                            break;
+                        }
+
+                        var pointerValue = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(pos, sizeof(long)));
+                        var parentAddress = cursor + (ulong)pos;
+                        AddMatchesForPointerValue(sortedTargetAddresses, pointerValue, parentAddress, options.MaxOffset, local);
+
+                        local.PendingProgress++;
+                        if ((local.PendingProgress & 4095) == 0)
+                        {
+                            progressDelta?.Invoke(4096);
+                            local.PendingProgress -= 4096;
+                        }
+                    }
+
+                    currentChunkSize = Math.Min(MaxReadChunkSize, currentChunkSize * 2);
+                    cursor += (ulong)primaryCount;
+                }
+
+                return local;
+            },
+            local =>
+            {
+                if (local.PendingProgress > 0)
+                {
+                    progressDelta?.Invoke(local.PendingProgress);
+                }
+
+                if (local.ParentsByTarget.Count == 0)
+                {
+                    return;
+                }
+
+                lock (mergeLock)
+                {
+                    foreach (var entry in local.ParentsByTarget)
+                    {
+                        if (!mergedParents.TryGetValue(entry.Key, out var list))
+                        {
+                            list = new List<PointerParentCandidate>(entry.Value.Count);
+                            mergedParents[entry.Key] = list;
+                        }
+
+                        list.AddRange(entry.Value);
+                    }
+                }
+            });
+
+        return mergedParents;
+    }
+
+    private static void AddMatchesForPointerValue(
+        ulong[] sortedTargetAddresses,
+        ulong pointerValue,
+        ulong parentAddress,
+        int maxOffset,
+        LocalParentCollector local)
+    {
+        int startIndex = LowerBound(sortedTargetAddresses, pointerValue);
+        ulong maxDelta = (ulong)Math.Max(0, maxOffset);
+
+        for (int i = startIndex; i < sortedTargetAddresses.Length; i++)
+        {
+            ulong childAddress = sortedTargetAddresses[i];
+            ulong delta = childAddress - pointerValue;
+            if (delta > maxDelta)
+            {
+                break;
             }
 
-            if (Interlocked.CompareExchange(ref totalEstimate, candidate, snapshot) == snapshot)
+            local.AddCandidate(childAddress, parentAddress, (int)delta);
+        }
+    }
+
+    private static int LowerBound(ulong[] sortedValues, ulong value)
+    {
+        int left = 0;
+        int right = sortedValues.Length;
+
+        while (left < right)
+        {
+            int middle = left + ((right - left) >> 1);
+            if (sortedValues[middle] < value)
             {
-                return;
+                left = middle + 1;
+            }
+            else
+            {
+                right = middle;
             }
         }
+
+        return left;
+    }
+
+    private static long SaturatingMultiply(long left, int right)
+    {
+        if (left <= 0 || right <= 0)
+        {
+            return 0;
+        }
+
+        if (left > long.MaxValue / right)
+        {
+            return long.MaxValue;
+        }
+
+        return left * right;
+    }
+
+    private static Dictionary<ulong, List<PointerChainNode>> GroupFrontierByAddress(IEnumerable<PointerChainNode> frontier)
+    {
+        var grouped = new Dictionary<ulong, List<PointerChainNode>>();
+        foreach (var node in frontier)
+        {
+            if (!grouped.TryGetValue(node.CurrentAddress, out var nodes))
+            {
+                nodes = new List<PointerChainNode>(1);
+                grouped[node.CurrentAddress] = nodes;
+            }
+
+            nodes.Add(node);
+        }
+
+        return grouped;
     }
 
     private static void TryReportProgressThrottled(
@@ -245,119 +420,6 @@ public sealed class PointerScanService
         return true;
     }
 
-    private PointerParentResult FindParents(
-        ulong childAddress,
-        PointerScanOptions options,
-        IReadOnlyList<ScanSlice> slices,
-        CancellationToken cancellationToken,
-        Action<long>? progressDelta)
-    {
-        var parallelOptions = new ParallelOptions
-        {
-            MaxDegreeOfParallelism = options.NormalizedThreadCount()
-        };
-
-        var mergeLock = new object();
-        var mergedParents = new List<PointerParentCandidate>(256);
-
-        Parallel.ForEach(
-            slices,
-            parallelOptions,
-            () => new LocalParentCollector(),
-            (slice, _, local) =>
-            {
-                if (cancellationToken.IsCancellationRequested)
-                {
-                    return local;
-                }
-
-                ulong cursor = slice.Start;
-                int currentChunkSize = InitialReadChunkSize;
-                while (cursor < slice.End)
-                {
-                    if (cancellationToken.IsCancellationRequested)
-                    {
-                        break;
-                    }
-
-                    ulong remaining = slice.End - cursor;
-                    int primaryChunkSize = (int)Math.Min((ulong)currentChunkSize, remaining);
-                    int readCount = primaryChunkSize + sizeof(long) - 1;
-                    if ((ulong)readCount > remaining)
-                    {
-                        readCount = (int)remaining;
-                    }
-
-                    if (!_memory.TryReadBytes(cursor, readCount, out var block) || block.Length < sizeof(long))
-                    {
-                        currentChunkSize = Math.Max(MinReadChunkSize, currentChunkSize / 2);
-                        cursor += (ulong)Math.Max(MinReadChunkSize, primaryChunkSize);
-                        continue;
-                    }
-
-                    var span = block.AsSpan();
-                    int primaryCount = Math.Min(primaryChunkSize, block.Length);
-                    int maxPosExclusive = Math.Min(primaryCount, span.Length - sizeof(long) + 1);
-
-                    for (int pos = 0; pos < maxPosExclusive; pos += options.Alignment)
-                    {
-                        if (cancellationToken.IsCancellationRequested)
-                        {
-                            break;
-                        }
-
-                        var pointerValue = BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(pos, sizeof(long)));
-                        if (childAddress >= pointerValue)
-                        {
-                            var delta = childAddress - pointerValue;
-                            if (delta <= (ulong)options.MaxOffset)
-                            {
-                                local.Parents.Add(new PointerParentCandidate
-                                {
-                                    ParentAddress = cursor + (ulong)pos,
-                                    Offset = (int)delta
-                                });
-                            }
-                        }
-
-                        local.PendingProgress++;
-                        if ((local.PendingProgress & 4095) == 0)
-                        {
-                            progressDelta?.Invoke(4096);
-                            local.PendingProgress -= 4096;
-                        }
-                    }
-
-                    currentChunkSize = Math.Min(MaxReadChunkSize, currentChunkSize * 2);
-                    cursor += (ulong)primaryCount;
-                }
-
-                return local;
-            },
-            local =>
-            {
-                if (local.PendingProgress > 0)
-                {
-                    progressDelta?.Invoke(local.PendingProgress);
-                }
-
-                if (local.Parents.Count == 0)
-                {
-                    return;
-                }
-
-                lock (mergeLock)
-                {
-                    mergedParents.AddRange(local.Parents);
-                }
-            });
-
-        return new PointerParentResult
-        {
-            Parents = mergedParents
-        };
-    }
-
     private static IReadOnlyList<ScanSlice> SliceRegions(IReadOnlyList<MemoryRegion> regions, ulong sliceSize)
     {
         var slices = new List<ScanSlice>(regions.Count);
@@ -421,11 +483,6 @@ public sealed class PointerScanService
         public int Offset { get; set; }
     }
 
-    private sealed class PointerParentResult
-    {
-        public List<PointerParentCandidate> Parents { get; set; } = new();
-    }
-
     private sealed class PointerChainNode
     {
         public ulong CurrentAddress { get; set; }
@@ -434,10 +491,26 @@ public sealed class PointerScanService
 
     private sealed class LocalParentCollector
     {
-        public List<PointerParentCandidate> Parents { get; } = new(128);
+        public Dictionary<ulong, List<PointerParentCandidate>> ParentsByTarget { get; } = new();
         public long PendingProgress { get; set; }
+
+        public void AddCandidate(ulong childAddress, ulong parentAddress, int offset)
+        {
+            if (!ParentsByTarget.TryGetValue(childAddress, out var list))
+            {
+                list = new List<PointerParentCandidate>(8);
+                ParentsByTarget[childAddress] = list;
+            }
+
+            list.Add(new PointerParentCandidate
+            {
+                ParentAddress = parentAddress,
+                Offset = offset
+            });
+        }
     }
 
     private readonly record struct ScanSlice(ulong Start, ulong End);
 }
+
 

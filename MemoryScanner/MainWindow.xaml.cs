@@ -202,6 +202,39 @@ public partial class MainWindow : Window
         WriteValue_OnClick(sender, e);
     }
 
+    private void CopyWatchAddress_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (WatchGrid.SelectedItem is not WatchEntry entry)
+        {
+            return;
+        }
+
+        string textToCopy;
+        if (_memoryAccessor.IsAttached && _memoryAccessor.TryResolveWatchAddress(entry, out var resolvedAddress, out _))
+        {
+            textToCopy = $"0x{resolvedAddress:X}";
+        }
+        else if (!string.IsNullOrWhiteSpace(entry.DisplayAddress))
+        {
+            textToCopy = entry.DisplayAddress;
+        }
+        else
+        {
+            textToCopy = entry.Kind == WatchEntryKind.DirectAddress
+                ? $"0x{entry.DirectAddress:X}"
+                : $"0x{entry.PointerBaseAddress:X}";
+        }
+
+        try
+        {
+            Clipboard.SetText(textToCopy);
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Clipboard Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
+    }
+
     private void EditWatchName_OnClick(object sender, RoutedEventArgs e)
     {
         if (WatchGrid.SelectedItem is not WatchEntry entry)
@@ -709,9 +742,10 @@ public partial class MainWindow : Window
             return;
         }
 
+        var selectedType = pointerWindow.SelectedValueDataType;
         foreach (var path in pointerWindow.SelectedPaths)
         {
-            var dialog = new AddWatchEntryWindow(path, initialType, processName: GetAttachedProcessName(), modules: GetAttachedModuleSnapshot()) { Owner = this };
+            var dialog = new AddWatchEntryWindow(path, selectedType, processName: GetAttachedProcessName(), modules: GetAttachedModuleSnapshot()) { Owner = this };
             if (dialog.ShowDialog() == true && dialog.CreatedEntry is not null)
             {
                 AddWatchEntry(dialog.CreatedEntry);
@@ -1359,38 +1393,4 @@ public partial class MainWindow : Window
         }
     }
 }
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
 
