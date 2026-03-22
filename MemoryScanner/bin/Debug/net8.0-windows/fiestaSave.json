@@ -1,0 +1,83 @@
+{
+  "ProcessName": "Fiesta",
+  "Entries": [
+    {
+      "Id": "b43fb25f-9519-449d-bfc5-80af6ae70d26",
+      "Name": "HP_MAX",
+      "Kind": 0,
+      "DataType": 1,
+      "DirectAddress": 21580906,
+      "PointerBaseAddress": 0,
+      "PointerBaseModuleName": "",
+      "PointerBaseModuleOffset": 0,
+      "Offsets": [],
+      "IsFrozen": false,
+      "FreezeValueText": ""
+    },
+    {
+      "Id": "2e887cae-fa00-4fe9-b33e-d593791ff99a",
+      "Name": "MP_MAX",
+      "Kind": 0,
+      "DataType": 1,
+      "DirectAddress": 21580910,
+      "PointerBaseAddress": 0,
+      "PointerBaseModuleName": "",
+      "PointerBaseModuleOffset": 0,
+      "Offsets": [],
+      "IsFrozen": false,
+      "FreezeValueText": ""
+    },
+    {
+      "Id": "e6f0bfbb-d647-4c54-9b51-594899a1f926",
+      "Name": "MP_CURRENT",
+      "Kind": 0,
+      "DataType": 1,
+      "DirectAddress": 21580678,
+      "PointerBaseAddress": 0,
+      "PointerBaseModuleName": "",
+      "PointerBaseModuleOffset": 0,
+      "Offsets": [],
+      "IsFrozen": false,
+      "FreezeValueText": ""
+    },
+    {
+      "Id": "444f80ca-a4e5-4ff0-927a-446fed3160ab",
+      "Name": "HP_CURRENT",
+      "Kind": 0,
+      "DataType": 1,
+      "DirectAddress": 21580674,
+      "PointerBaseAddress": 0,
+      "PointerBaseModuleName": "",
+      "PointerBaseModuleOffset": 0,
+      "Offsets": [],
+      "IsFrozen": false,
+      "FreezeValueText": ""
+    },
+    {
+      "Id": "1546d417-a8dd-4d8b-9e5c-73700c2720aa",
+      "Name": "Address_2FB013E4",
+      "Kind": 0,
+      "DataType": 3,
+      "DirectAddress": 800068580,
+      "PointerBaseAddress": 0,
+      "PointerBaseModuleName": "",
+      "PointerBaseModuleOffset": 0,
+      "Offsets": [],
+      "IsFrozen": false,
+      "FreezeValueText": ""
+    },
+    {
+      "Id": "d181ded3-e7f4-4d3a-90d6-641bf6eb9ac0",
+      "Name": "Address_2FB013E8",
+      "Kind": 0,
+      "DataType": 3,
+      "DirectAddress": 800068584,
+      "PointerBaseAddress": 0,
+      "PointerBaseModuleName": "",
+      "PointerBaseModuleOffset": 0,
+      "Offsets": [],
+      "IsFrozen": false,
+      "FreezeValueText": ""
+    }
+  ]
+}

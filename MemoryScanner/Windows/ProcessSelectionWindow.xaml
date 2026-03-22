@@ -1,0 +1,35 @@
+<Window x:Class="MemoryScanner.Windows.ProcessSelectionWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Select Process" Height="520" Width="680" WindowStartupLocation="CenterOwner">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <DockPanel Grid.Row="0" Margin="0,0,0,8">
+            <TextBlock Text="Choose target process" FontSize="16" FontWeight="SemiBold" VerticalAlignment="Center"/>
+            <Button Content="Refresh" Width="100" Height="28" DockPanel.Dock="Right" Click="Refresh_OnClick"/>
+        </DockPanel>
+
+        <DataGrid x:Name="ProcessGrid"
+                  Grid.Row="1"
+                  AutoGenerateColumns="False"
+                  IsReadOnly="True"
+                  SelectionMode="Single"
+                  MouseDoubleClick="ProcessGrid_OnMouseDoubleClick">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Name" Binding="{Binding ProcessName}" Width="2*"/>
+                <DataGridTextColumn Header="PID" Binding="{Binding Id}" Width="*"/>
+                <DataGridTextColumn Header="Window" Binding="{Binding MainWindowTitle}" Width="3*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="2" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,10,0,0">
+            <Button Content="Cancel" Width="100" Height="30" Margin="0,0,8,0" Click="Cancel_OnClick"/>
+            <Button Content="Select" Width="100" Height="30" Click="Select_OnClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

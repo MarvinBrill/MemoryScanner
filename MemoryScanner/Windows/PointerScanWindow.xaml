@@ -1,0 +1,66 @@
+<Window x:Class="MemoryScanner.Windows.PointerScanWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pointer Scan" Height="720" Width="1180" WindowStartupLocation="CenterOwner">
+    <Grid Margin="10">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="260"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Text="Target address" VerticalAlignment="Center" Grid.Column="0"/>
+            <TextBox x:Name="TargetAddressText" Grid.Column="1" Margin="6,0,14,0" Text="0x0"/>
+            <Button x:Name="PointerPresetButton" Grid.Column="2" Content="Pointer Preset..." Width="130" Height="30" Click="PointerPreset_OnClick"/>
+        </Grid>
+
+        <DataGrid x:Name="ResultGrid"
+                  Grid.Row="1"
+                  AutoGenerateColumns="False"
+                  SelectionMode="Extended"
+                  IsReadOnly="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Pointer Expression" Binding="{Binding DisplayExpression}" Width="2.6*"/>
+                <DataGridTextColumn Header="Value" Binding="{Binding ValueText}" Width="1.1*"/>
+                <DataGridTextColumn Header="Base" Binding="{Binding BaseAddress}" Width="*"/>
+                <DataGridTextColumn Header="Offsets" Binding="{Binding OffsetsDisplay}" Width="1.8*"/>
+                <DataGridTextColumn Header="Final Preview" Binding="{Binding FinalAddressDisplay}" Width="1.2*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <Grid Grid.Row="2" Margin="0,10,0,0">
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
+
+            <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,0,8">
+                <TextBlock x:Name="PointerOptionsText" Foreground="Black" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <ProgressBar x:Name="PointerProgressBar" Width="320" Height="18" Minimum="0" Maximum="100" Value="0" Margin="0,0,8,0"/>
+                <TextBlock x:Name="PointerProgressText" Foreground="Black" VerticalAlignment="Center" Text="Idle"/>
+            </StackPanel>
+
+            <WrapPanel Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Center" ItemHeight="30">
+                <CheckBox x:Name="IncludePrivateBox" Content="Include Private" IsChecked="True" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                <CheckBox x:Name="IncludeMappedBox" Content="Include Mapped" IsChecked="True" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                <CheckBox x:Name="IncludeImageBox" Content="Include Image/Module" IsChecked="True" Margin="0,0,10,0" VerticalAlignment="Center"/>
+                <CheckBox x:Name="RequireStaticRootBox" Content="Require Static Root" IsChecked="False" Margin="0,0,12,0" VerticalAlignment="Center"/>
+                <Button x:Name="PointerOptionsButton" Content="Options" Width="90" Height="30" Margin="0,0,8,0" Click="PointerOptions_OnClick"/>
+                <Button x:Name="RefreshValuesButton" Content="Refresh Values" Width="110" Height="30" Margin="0,0,8,0" Click="RefreshValues_OnClick"/>
+                <Button x:Name="SaveResultsButton" Content="Save" Width="80" Height="30" Margin="0,0,8,0" Click="SaveResults_OnClick"/>
+                <Button x:Name="LoadResultsButton" Content="Load" Width="80" Height="30" Margin="0,0,8,0" Click="LoadResults_OnClick"/>
+                <Button x:Name="StartScanButton" Content="Start Scan" Width="110" Height="30" Margin="0,0,8,0" Click="StartScan_OnClick"/>
+                <Button x:Name="CancelScanButton" Content="Cancel" Width="90" Height="30" Margin="0,0,8,0" Click="CancelScan_OnClick"/>
+                <Button Content="Take Selected" Width="130" Height="30" Click="TakeSelected_OnClick"/>
+            </WrapPanel>
+        </Grid>
+    </Grid>
+</Window>
