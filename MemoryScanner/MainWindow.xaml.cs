@@ -16,6 +16,10 @@ namespace MemoryScanner;
 public partial class MainWindow : Window
 {
     private const int ShowAllPageSize = -1;
+    private const int MinWatchRefreshBatchSize = 24;
+    private const int MaxWatchRefreshBatchSize = 256;
+    private const int MinScanResultRefreshBatchSize = 32;
+    private const int MaxScanResultRefreshBatchSize = 512;
     private readonly ObservableCollection<WatchEntry> _watchEntries = new();
     private readonly ObservableCollection<ScanResultRow> _scanResults = new();
     private readonly List<ScanResultRow> _allScanResults = new();
@@ -36,6 +40,9 @@ public partial class MainWindow : Window
     private bool _resumeWatchRefreshAfterScan;
     private bool _resumeScanResultRefreshAfterScan;
     private string? _currentWatchListFilePath;
+    private int _watchRefreshCursor;
+    private int _scanResultRefreshCursor;
+    private bool _watchInvalidStateApplied;
 
     public MainWindow()
     {
@@ -108,6 +115,7 @@ public partial class MainWindow : Window
         if (WatchGrid.SelectedItem is WatchEntry entry)
         {
             _watchEntries.Remove(entry);
+            _watchInvalidStateApplied = false;
         }
     }
 
@@ -408,6 +416,7 @@ public partial class MainWindow : Window
         _scanService.Reset();
         _allScanResults.Clear();
         _scanResults.Clear();
+        _scanResultRefreshCursor = 0;
         _scanResultPageIndex = 0;
         UpdateScanResultPageUi();
         ScanProgressBar.Value = 0;
@@ -493,7 +502,22 @@ public partial class MainWindow : Window
 
     private void ScanResultRefreshTimer_OnTick(object? sender, EventArgs e)
     {
-        RefreshScanResultValues();
+        RefreshScanResultValuesIncremental();
+    }
+
+    private void ScanResultGrid_OnScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            return;
+        }
+
+        if (Math.Abs(e.VerticalChange) < 0.01 && Math.Abs(e.ViewportHeightChange) < 0.01)
+        {
+            return;
+        }
+
+        RefreshVisibleScanResultRows();
     }
 
     private void RefreshScanResultValues()
@@ -503,18 +527,72 @@ public partial class MainWindow : Window
             return;
         }
 
+        _scanResultRefreshCursor = 0;
         foreach (var row in _scanResults)
         {
-            if (_memoryAccessor.TryReadValue(row.Address, row.DataType, out var value))
-            {
-                row.ValueText = FormatValue(value);
-            }
-            else
-            {
-                row.ValueText = "<invalid>";
-            }
+            UpdateScanResultRowValue(row);
+        }
+    }
+
+    private void RefreshScanResultValuesIncremental()
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            return;
         }
 
+        var count = _scanResults.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        var visibleRows = GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid);
+        var visibleSet = visibleRows.Count > 0 ? new HashSet<ScanResultRow>(visibleRows) : null;
+        foreach (var row in visibleRows)
+        {
+            UpdateScanResultRowValue(row);
+        }
+
+        if (_scanResultRefreshCursor >= count)
+        {
+            _scanResultRefreshCursor = 0;
+        }
+
+        var backgroundBudget = Math.Min(count, ComputeRefreshBatchSize(count, MinScanResultRefreshBatchSize, MaxScanResultRefreshBatchSize));
+        var updated = 0;
+        var attempts = 0;
+        while (updated < backgroundBudget && attempts < count)
+        {
+            if (_scanResultRefreshCursor >= count)
+            {
+                _scanResultRefreshCursor = 0;
+            }
+
+            var row = _scanResults[_scanResultRefreshCursor];
+            _scanResultRefreshCursor++;
+            attempts++;
+
+            if (visibleSet is not null && visibleSet.Contains(row))
+            {
+                continue;
+            }
+
+            UpdateScanResultRowValue(row);
+            updated++;
+        }
+    }
+
+    private void UpdateScanResultRowValue(ScanResultRow row)
+    {
+        if (_memoryAccessor.TryReadValue(row.Address, row.DataType, out var value))
+        {
+            row.ValueText = FormatValue(value);
+        }
+        else
+        {
+            row.ValueText = "<invalid>";
+        }
     }
 
     private async Task RunScanAsync(bool isFirstScan)
@@ -911,41 +989,144 @@ public partial class MainWindow : Window
 
     private void RefreshTimer_OnTick(object? sender, EventArgs e)
     {
-        RefreshWatchValues();
+        RefreshWatchValuesIncremental();
         ApplyFreezeValues();
+    }
+
+    private void WatchGrid_OnScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached || _isScanRunning)
+        {
+            return;
+        }
+
+        if (Math.Abs(e.VerticalChange) < 0.01 && Math.Abs(e.ViewportHeightChange) < 0.01)
+        {
+            return;
+        }
+
+        RefreshVisibleWatchEntries();
     }
 
     private void RefreshWatchValues()
     {
         if (!_memoryAccessor.IsAttached)
         {
-            foreach (var entry in _watchEntries)
+            SetWatchEntriesInvalidIfNeeded();
+            return;
+        }
+
+        _watchInvalidStateApplied = false;
+        _watchRefreshCursor = 0;
+        foreach (var entry in _watchEntries)
+        {
+            UpdateWatchEntryValue(entry);
+        }
+    }
+
+    private void RefreshWatchValuesIncremental()
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            SetWatchEntriesInvalidIfNeeded();
+            return;
+        }
+
+        _watchInvalidStateApplied = false;
+
+        var count = _watchEntries.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        var visibleEntries = GetVisibleDataGridItems<WatchEntry>(WatchGrid);
+        var visibleSet = visibleEntries.Count > 0 ? new HashSet<WatchEntry>(visibleEntries) : null;
+        foreach (var entry in visibleEntries)
+        {
+            UpdateWatchEntryValue(entry);
+        }
+
+        if (_watchRefreshCursor >= count)
+        {
+            _watchRefreshCursor = 0;
+        }
+
+        var backgroundBudget = Math.Min(count, ComputeRefreshBatchSize(count, MinWatchRefreshBatchSize, MaxWatchRefreshBatchSize));
+        var updated = 0;
+        var attempts = 0;
+        while (updated < backgroundBudget && attempts < count)
+        {
+            if (_watchRefreshCursor >= count)
             {
-                entry.Status = "Invalid";
+                _watchRefreshCursor = 0;
             }
+
+            var entry = _watchEntries[_watchRefreshCursor];
+            _watchRefreshCursor++;
+            attempts++;
+
+            if (visibleSet is not null && visibleSet.Contains(entry))
+            {
+                continue;
+            }
+
+            UpdateWatchEntryValue(entry);
+            updated++;
+        }
+    }
+
+    private void RefreshVisibleWatchEntries()
+    {
+        foreach (var entry in GetVisibleDataGridItems<WatchEntry>(WatchGrid))
+        {
+            UpdateWatchEntryValue(entry);
+        }
+    }
+
+    private void RefreshVisibleScanResultRows()
+    {
+        foreach (var row in GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid))
+        {
+            UpdateScanResultRowValue(row);
+        }
+    }
+
+    private void SetWatchEntriesInvalidIfNeeded()
+    {
+        if (_watchInvalidStateApplied)
+        {
             return;
         }
 
         foreach (var entry in _watchEntries)
         {
-            if (!_memoryAccessor.TryResolveWatchAddress(entry, out var address, out var displayAddress))
-            {
-                entry.Status = "Invalid";
-                continue;
-            }
+            entry.Status = "Invalid";
+        }
 
-            entry.DisplayAddress = displayAddress;
-            entry.IsProcessBaseDisplay = IsProcessBaseAddressText(displayAddress);
+        _watchInvalidStateApplied = true;
+        _watchRefreshCursor = 0;
+    }
 
-            if (_memoryAccessor.TryReadValue(address, entry.DataType, out var value))
-            {
-                entry.LastValueText = FormatValue(value);
-                entry.Status = "Valid";
-            }
-            else
-            {
-                entry.Status = "Invalid";
-            }
+    private void UpdateWatchEntryValue(WatchEntry entry)
+    {
+        if (!_memoryAccessor.TryResolveWatchAddress(entry, out var address, out var displayAddress))
+        {
+            entry.Status = "Invalid";
+            return;
+        }
+
+        entry.DisplayAddress = displayAddress;
+        entry.IsProcessBaseDisplay = IsProcessBaseAddressText(displayAddress);
+
+        if (_memoryAccessor.TryReadValue(address, entry.DataType, out var value))
+        {
+            entry.LastValueText = FormatValue(value);
+            entry.Status = "Valid";
+        }
+        else
+        {
+            entry.Status = "Invalid";
         }
     }
 
@@ -956,8 +1137,13 @@ public partial class MainWindow : Window
             return;
         }
 
-        foreach (var entry in _watchEntries.Where(x => x.IsFrozen))
+        foreach (var entry in _watchEntries)
         {
+            if (!entry.IsFrozen)
+            {
+                continue;
+            }
+
             if (!_memoryAccessor.TryResolveWatchAddress(entry, out var address, out _))
             {
                 entry.Status = "Invalid";
@@ -992,6 +1178,7 @@ public partial class MainWindow : Window
 
         entry.Status = "Unknown";
         _watchEntries.Add(entry);
+        _watchInvalidStateApplied = false;
 
         if (refreshNow)
         {
@@ -1156,6 +1343,7 @@ public partial class MainWindow : Window
 
     private void ApplyScanResultPagination()
     {
+        _scanResultRefreshCursor = 0;
         _scanResults.Clear();
 
         if (_allScanResults.Count == 0)
@@ -1190,6 +1378,17 @@ public partial class MainWindow : Window
         }
 
         UpdateScanResultPageUi();
+    }
+
+    private static int ComputeRefreshBatchSize(int totalCount, int minBatchSize, int maxBatchSize)
+    {
+        if (totalCount <= 0)
+        {
+            return 0;
+        }
+
+        var scaled = totalCount / 20;
+        return Math.Clamp(scaled, minBatchSize, maxBatchSize);
     }
 
     private int GetScanResultPageCount()
@@ -1253,6 +1452,73 @@ public partial class MainWindow : Window
         }
 
         return null;
+    }
+
+    private static IReadOnlyList<T> GetVisibleDataGridItems<T>(DataGrid grid) where T : class
+    {
+        var indexedItems = new List<(int Index, T Item)>();
+        foreach (var row in FindVisualChildren<DataGridRow>(grid))
+        {
+            if (!row.IsVisible)
+            {
+                continue;
+            }
+
+            var index = row.GetIndex();
+            if (index < 0 || index >= grid.Items.Count)
+            {
+                continue;
+            }
+
+            if (grid.Items[index] is T item)
+            {
+                indexedItems.Add((index, item));
+            }
+        }
+
+        if (indexedItems.Count <= 1)
+        {
+            return indexedItems.Select(x => x.Item).ToArray();
+        }
+
+        indexedItems.Sort((a, b) => a.Index.CompareTo(b.Index));
+        var deduplicated = new List<T>(indexedItems.Count);
+        var lastIndex = -1;
+        foreach (var entry in indexedItems)
+        {
+            if (entry.Index == lastIndex)
+            {
+                continue;
+            }
+
+            deduplicated.Add(entry.Item);
+            lastIndex = entry.Index;
+        }
+
+        return deduplicated;
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject? parent) where T : DependencyObject
+    {
+        if (parent is null)
+        {
+            yield break;
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < childCount; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T typedChild)
+            {
+                yield return typedChild;
+            }
+
+            foreach (var descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
+            }
+        }
     }
 
     private string? PromptForText(string title, string label, string defaultValue)
@@ -1393,4 +1659,3 @@ public partial class MainWindow : Window
         }
     }
 }
-

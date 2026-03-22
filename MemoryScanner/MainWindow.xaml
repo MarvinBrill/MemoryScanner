@@ -74,12 +74,18 @@
                               AutoGenerateColumns="False"
                               SelectionMode="Single"
                               CanUserAddRows="False"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.CanContentScroll="True"
                               HeadersVisibility="Column"
                               Background="#FF242424"
                               Foreground="#FFF0F0F0"
                               RowBackground="#FF242424"
                               AlternatingRowBackground="#FF292929"
                               BorderThickness="0"
+                              ScrollViewer.ScrollChanged="WatchGrid_OnScrollChanged"
                               MouseDoubleClick="WatchGrid_OnMouseDoubleClick">
                         <DataGrid.ColumnHeaderStyle>
                             <Style TargetType="DataGridColumnHeader">
@@ -220,12 +226,19 @@
                               Grid.Row="3"
                               AutoGenerateColumns="False"
                               SelectionMode="Extended"
+                              CanUserAddRows="False"
                               IsReadOnly="True"
+                              EnableRowVirtualization="True"
+                              EnableColumnVirtualization="True"
+                              VirtualizingPanel.IsVirtualizing="True"
+                              VirtualizingPanel.VirtualizationMode="Recycling"
+                              ScrollViewer.CanContentScroll="True"
                               Background="#FF242424"
                               Foreground="#FFF0F0F0"
                               RowBackground="#FF242424"
                               AlternatingRowBackground="#FF292929"
                               BorderThickness="0"
+                              ScrollViewer.ScrollChanged="ScanResultGrid_OnScrollChanged"
                               MouseDoubleClick="ScanResultGrid_OnMouseDoubleClick">
                         <DataGrid.ColumnHeaderStyle>
                             <Style TargetType="DataGridColumnHeader">
@@ -287,6 +300,3 @@
         </Grid>
     </Grid>
 </Window>
-
-
-
