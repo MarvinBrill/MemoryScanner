@@ -31,6 +31,7 @@
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="220"/>
@@ -98,6 +99,7 @@
 
             <CheckBox x:Name="RequireRootInRangeBox" Grid.Row="19" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Require base/root address in range"/>
             <CheckBox x:Name="RequireAllNodesInRangeBox" Grid.Row="20" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Require all pointer nodes in range (strict)"/>
+            <CheckBox x:Name="TrimMemoryAfterCancelBox" Grid.Row="21" Grid.ColumnSpan="2" Margin="0,0,0,8" Content="Trim memory after user cancel"/>
         </Grid>
 
         <StackPanel Grid.Row="1" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,12,0,0">
@@ -106,4 +108,3 @@
         </StackPanel>
     </Grid>
 </Window>
-

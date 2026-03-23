@@ -144,12 +144,7 @@
                     </DataGrid>
 
                     <Grid Grid.Row="3" Margin="0,8,0,0">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
+                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button Width="42" Height="30" Margin="0,0,8,0" Click="AddWatchEntry_OnClick" ToolTip="Add Entry">
                                 <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE710;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Button>
@@ -157,8 +152,6 @@
                                 <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE74D;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Button>
                         </StackPanel>
-
-                        <Button Grid.Column="1" Content="Write Value" Width="100" Height="30" HorizontalAlignment="Right" Click="WriteValue_OnClick"/>
                     </Grid>
                 </Grid>
             </Border>

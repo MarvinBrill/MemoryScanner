@@ -38,6 +38,7 @@ public partial class PointerScanOptionsWindow : Window
         AddressRangeToText.Text = $"0x{current.AddressRangeTo:X}";
         RequireRootInRangeBox.IsChecked = current.RequireRootInAddressRange;
         RequireAllNodesInRangeBox.IsChecked = current.RequireAllNodesInAddressRange;
+        TrimMemoryAfterCancelBox.IsChecked = current.TrimMemoryAfterCancel;
 
         AlignmentBox.Text = Math.Max(1, current.Alignment).ToString(CultureInfo.InvariantCulture);
         PointerWidthModeBox.SelectedIndex = current.PointerWidthMode switch
@@ -176,10 +177,10 @@ public partial class PointerScanOptionsWindow : Window
             AddressRangeFrom = rangeFrom,
             AddressRangeTo = rangeTo,
             RequireRootInAddressRange = requireRootInRange,
-            RequireAllNodesInAddressRange = requireAllNodesInRange
+            RequireAllNodesInAddressRange = requireAllNodesInRange,
+            TrimMemoryAfterCancel = TrimMemoryAfterCancelBox.IsChecked == true
         };
 
         DialogResult = true;
     }
 }
-

@@ -20,6 +20,15 @@
                   IsReadOnly="True"
                   SelectionMode="Single"
                   MouseDoubleClick="ProcessGrid_OnMouseDoubleClick">
+            <DataGrid.RowStyle>
+                <Style TargetType="DataGridRow">
+                    <Style.Triggers>
+                        <DataTrigger Binding="{Binding HasWindowTitle}" Value="True">
+                            <Setter Property="Foreground" Value="#FF2E8B57"/>
+                        </DataTrigger>
+                    </Style.Triggers>
+                </Style>
+            </DataGrid.RowStyle>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Name" Binding="{Binding ProcessName}" Width="2*"/>
                 <DataGridTextColumn Header="PID" Binding="{Binding Id}" Width="*"/>

@@ -12,6 +12,7 @@ public interface IMemoryAccessor
     bool TryAttach(Process process, out string error);
     void Detach();
     bool TryReadBytes(ulong address, int count, out byte[] data);
+    bool TryReadBytes(ulong address, byte[] buffer, int count, out int bytesRead);
     bool TryReadValue(ulong address, MemoryDataType dataType, out object value);
     bool TryWriteValue(ulong address, MemoryDataType dataType, object value);
     bool TryResolveWatchAddress(WatchEntry entry, out ulong finalAddress, out string displayAddress);
@@ -82,15 +83,40 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
 
         try
         {
-            data = _helper.ReadMemoryBytes(address, count);
-            return data.Length == count;
+            data = new byte[count];
+            if (!_helper.TryReadMemoryBytes(address, data, count, out var bytesRead) || bytesRead < count)
+            {
+                data = Array.Empty<byte>();
+                return false;
+            }
+
+            return true;
         }
         catch
         {
+            data = Array.Empty<byte>();
             return false;
         }
     }
 
+    public bool TryReadBytes(ulong address, byte[] buffer, int count, out int bytesRead)
+    {
+        bytesRead = 0;
+        if (_helper is null || buffer.Length == 0 || count <= 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            return _helper.TryReadMemoryBytes(address, buffer, count, out bytesRead);
+        }
+        catch
+        {
+            bytesRead = 0;
+            return false;
+        }
+    }
     public bool TryReadValue(ulong address, MemoryDataType dataType, out object value)
     {
         value = 0;
@@ -283,6 +309,10 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         return modules;
     }
 }
+
+
+
+
 
 
 

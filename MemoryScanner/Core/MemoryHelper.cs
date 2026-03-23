@@ -23,14 +23,14 @@ public class MemoryHelper32
     public byte[] ReadMemoryBytes(uint MemoryAddress, uint Bytes)
     {
         byte[] data = new byte[Bytes];
-        ReadProcessMemory(process.Handle, MemoryAddress, data, data.Length, IntPtr.Zero);
+        ReadProcessMemory(process.Handle, MemoryAddress, data, data.Length, out _);
         return data;
     }
 
     public string ReadMemoryString(uint MemoryAddress, int length)
     {
         byte[] data = new byte[length];
-        ReadProcessMemory(process.Handle, MemoryAddress, data, data.Length, IntPtr.Zero);
+        ReadProcessMemory(process.Handle, MemoryAddress, data, data.Length, out _);
         string s = Encoding.Default.GetString(data);
         string result = "";
         char[] charArr = s.ToCharArray();
@@ -97,7 +97,7 @@ public class MemoryHelper32
         uint lpBaseAddress,
         byte[] lpBuffer,
         int nSize,
-        IntPtr lpNumberOfBytesRead);
+        out IntPtr lpNumberOfBytesRead);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool WriteProcessMemory(
@@ -129,8 +129,26 @@ public class MemoryHelper64
     public byte[] ReadMemoryBytes(ulong MemoryAddress, int Bytes)
     {
         byte[] data = new byte[Bytes];
-        ReadProcessMemory(process.Handle, MemoryAddress, data, data.Length, IntPtr.Zero);
+        _ = TryReadMemoryBytes(MemoryAddress, data, data.Length, out _);
         return data;
+    }
+
+    public bool TryReadMemoryBytes(ulong memoryAddress, byte[] buffer, int count, out int bytesRead)
+    {
+        bytesRead = 0;
+        if (buffer.Length == 0 || count <= 0)
+        {
+            return false;
+        }
+
+        if (count > buffer.Length)
+        {
+            count = buffer.Length;
+        }
+
+        var ok = ReadProcessMemory(process.Handle, memoryAddress, buffer, count, out var bytesReadPtr);
+        bytesRead = bytesReadPtr.ToInt32();
+        return bytesRead > 0;
     }
 
     public T ReadMemory<T>(ulong MemoryAddress)
@@ -167,7 +185,7 @@ public class MemoryHelper64
         ulong lpBaseAddress,
         byte[] lpBuffer,
         int nSize,
-        IntPtr lpNumberOfBytesRead);
+        out IntPtr lpNumberOfBytesRead);
 
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool WriteProcessMemory(
@@ -245,6 +263,10 @@ public static class ObjectType
         }
     }
 }
+
+
+
+
 
 
 

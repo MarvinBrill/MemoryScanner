@@ -8,10 +8,13 @@ namespace MemoryScanner.Core;
 
 public sealed class PointerScanService
 {
-    private const int InitialReadChunkSize = 256 * 1024;
+    private const int InitialReadChunkSize = 64 * 1024;
     private const int MinReadChunkSize = 16 * 1024;
-    private const int MaxReadChunkSize = 1024 * 1024;
+    private const int MaxReadChunkSize = 80 * 1024;
     private const ulong RegionSliceSize = 8UL * 1024 * 1024;
+    private const int LocalParentFlushThreshold = 32768;
+    private const int MergeShardCount = 64;
+    private const int MergeProgressReportStep = 1024;
 
     private readonly IMemoryAccessor _memory;
     private readonly MemoryRegionEnumerator _regionEnumerator;
@@ -93,13 +96,14 @@ public sealed class PointerScanService
             }
 
             var groupedFrontier = GroupFrontierByAddress(frontier);
-            var sortedTargets = groupedFrontier.Keys.OrderBy(x => x).ToArray();
+            var sortedTargets = groupedFrontier.Keys.ToArray();
+            Array.Sort(sortedTargets);
             if (sortedTargets.Length == 0)
             {
                 break;
             }
 
-            var status = $"Pointer scan d{depth + 1}/{options.MaxDepth} targets {sortedTargets.Length}";
+            var scanStatus = $"Scanning d{depth + 1}/{options.MaxDepth} targets {sortedTargets.Length}";
             var parentMap = FindParentsForTargets(
                 sortedTargets,
                 options,
@@ -115,7 +119,37 @@ public sealed class PointerScanService
                         ref lastReportTicks,
                         processedGlobal,
                         totalWorkEstimate,
-                        status);
+                        scanStatus,
+                        ScanProgressPhase.Scanning);
+                },
+                (mergeProcessed, mergeTotal) =>
+                {
+                    var processedGlobal = Volatile.Read(ref processedWork);
+                    var mergeStatus = $"Merging d{depth + 1}/{options.MaxDepth} targets {mergeProcessed}/{mergeTotal}";
+                    if (mergeProcessed >= mergeTotal)
+                    {
+                        ReportProgress(
+                            progress,
+                            processedGlobal,
+                            totalWorkEstimate,
+                            mergeStatus,
+                            ScanProgressPhase.Merging,
+                            mergeProcessed,
+                            mergeTotal);
+                    }
+                    else
+                    {
+                        TryReportProgressThrottled(
+                            progress,
+                            progressGate,
+                            ref lastReportTicks,
+                            processedGlobal,
+                            totalWorkEstimate,
+                            mergeStatus,
+                            ScanProgressPhase.Merging,
+                            mergeProcessed,
+                            mergeTotal);
+                    }
                 });
 
             var nextFrontier = new List<PointerChainNode>(Math.Max(128, frontier.Count * 2));
@@ -207,9 +241,14 @@ public sealed class PointerScanService
                 }
             }
 
+            groupedFrontier.Clear();
+            parentMap.Clear();
             frontier = nextFrontier;
-            ReportProgress(progress, Volatile.Read(ref processedWork), totalWorkEstimate, status);
+            ReportProgress(progress, Volatile.Read(ref processedWork), totalWorkEstimate, scanStatus, ScanProgressPhase.Scanning);
         }
+
+        frontier.Clear();
+        visited?.Clear();
 
         var finalStatus = cancellationToken.IsCancellationRequested
             ? "Pointer scan canceled"
@@ -228,27 +267,26 @@ public sealed class PointerScanService
         IReadOnlyList<ScanSlice> slices,
         int pointerSizeBytes,
         CancellationToken cancellationToken,
-        Action<long>? progressDelta)
+        Action<long>? progressDelta,
+        Action<long, long>? mergeProgress)
     {
-        var mergedParents = new Dictionary<ulong, List<PointerParentCandidate>>(Math.Max(16, sortedTargetAddresses.Length));
         if (sortedTargetAddresses.Length == 0 || slices.Count == 0)
         {
-            return mergedParents;
+            return new Dictionary<ulong, List<PointerParentCandidate>>(Math.Max(16, sortedTargetAddresses.Length));
         }
 
         var parallelOptions = new ParallelOptions
         {
-            MaxDegreeOfParallelism = options.NormalizedThreadCount(),
-            CancellationToken = cancellationToken
+            MaxDegreeOfParallelism = options.NormalizedThreadCount()
         };
 
-        var mergeLock = new object();
+        var mergeShards = CreateMergeShards();
 
         Parallel.ForEach(
             slices,
             parallelOptions,
-            () => new LocalParentCollector(),
-            (slice, _, local) =>
+            () => new LocalParentCollector(MaxReadChunkSize + pointerSizeBytes),
+            (slice, loopState, local) =>
             {
                 ulong cursor = slice.Start;
                 int currentChunkSize = InitialReadChunkSize;
@@ -261,7 +299,11 @@ public sealed class PointerScanService
 
                 while (cursor < slice.End)
                 {
-                    parallelOptions.CancellationToken.ThrowIfCancellationRequested();
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        loopState.Stop();
+                        break;
+                    }
 
                     ulong remaining = slice.End - cursor;
                     int primaryChunkSize = (int)Math.Min((ulong)currentChunkSize, remaining);
@@ -271,21 +313,23 @@ public sealed class PointerScanService
                         readCount = (int)remaining;
                     }
 
-                    if (!_memory.TryReadBytes(cursor, readCount, out var block) || block.Length < pointerSizeBytes)
+                    var readBuffer = local.GetReadBuffer(readCount);
+                    if (!_memory.TryReadBytes(cursor, readBuffer, readCount, out var bytesRead) || bytesRead < pointerSizeBytes)
                     {
                         currentChunkSize = Math.Max(MinReadChunkSize, currentChunkSize / 2);
                         cursor += (ulong)Math.Max(MinReadChunkSize, primaryChunkSize);
                         continue;
                     }
 
-                    var span = block.AsSpan();
-                    int primaryCount = Math.Min(primaryChunkSize, block.Length);
+                    var span = readBuffer.AsSpan(0, bytesRead);
+                    int primaryCount = Math.Min(primaryChunkSize, bytesRead);
                     int maxPosExclusive = Math.Min(primaryCount, span.Length - pointerSizeBytes + 1);
 
                     for (int pos = 0; pos < maxPosExclusive; pos += alignment)
                     {
-                        if (parallelOptions.CancellationToken.IsCancellationRequested)
+                        if (cancellationToken.IsCancellationRequested)
                         {
+                            loopState.Stop();
                             break;
                         }
 
@@ -294,6 +338,11 @@ public sealed class PointerScanService
                             : BinaryPrimitives.ReadUInt64LittleEndian(span.Slice(pos, sizeof(ulong)));
                         var parentAddress = cursor + (ulong)pos;
                         AddMatchesForPointerValue(sortedTargetAddresses, pointerValue, parentAddress, options.MaxOffset, options.AllowNegativeOffsets, local);
+
+                        if (local.CandidateCount >= LocalParentFlushThreshold)
+                        {
+                            FlushLocalParents(local, mergeShards);
+                        }
 
                         local.PendingProgress++;
                         if ((local.PendingProgress & 4095) == 0)
@@ -316,27 +365,99 @@ public sealed class PointerScanService
                     progressDelta?.Invoke(local.PendingProgress);
                 }
 
-                if (local.ParentsByTarget.Count == 0)
-                {
-                    return;
-                }
-
-                lock (mergeLock)
-                {
-                    foreach (var entry in local.ParentsByTarget)
-                    {
-                        if (!mergedParents.TryGetValue(entry.Key, out var list))
-                        {
-                            list = new List<PointerParentCandidate>(entry.Value.Count);
-                            mergedParents[entry.Key] = list;
-                        }
-
-                        list.AddRange(entry.Value);
-                    }
-                }
+                FlushLocalParents(local, mergeShards);
             });
 
+        return CombineShardParents(mergeShards, sortedTargetAddresses.Length, mergeProgress);
+    }
+
+    private static void FlushLocalParents(
+        LocalParentCollector local,
+        MergeShard[] mergeShards)
+    {
+        if (local.ParentsByTarget.Count == 0)
+        {
+            return;
+        }
+
+        foreach (var entry in local.ParentsByTarget)
+        {
+            var shard = mergeShards[GetMergeShardIndex(entry.Key)];
+            lock (shard.SyncRoot)
+            {
+                ref var listRef = ref CollectionsMarshal.GetValueRefOrAddDefault(shard.ParentsByTarget, entry.Key, out var exists);
+                if (!exists || listRef is null)
+                {
+                    listRef = new List<PointerParentCandidate>(entry.Value.Count);
+                }
+
+                listRef.AddRange(entry.Value);
+            }
+        }
+
+        local.ClearCandidates();
+    }
+
+    private static Dictionary<ulong, List<PointerParentCandidate>> CombineShardParents(
+        MergeShard[] mergeShards,
+        int targetCountEstimate,
+        Action<long, long>? mergeProgress)
+    {
+        var mergedParents = new Dictionary<ulong, List<PointerParentCandidate>>(Math.Max(16, targetCountEstimate));
+
+        long totalMergeTargets = 0;
+        foreach (var shard in mergeShards)
+        {
+            totalMergeTargets += shard.ParentsByTarget.Count;
+        }
+
+        if (totalMergeTargets <= 0)
+        {
+            mergeProgress?.Invoke(1, 1);
+            return mergedParents;
+        }
+
+        long mergedTargetCount = 0;
+        foreach (var shard in mergeShards)
+        {
+            foreach (var entry in shard.ParentsByTarget)
+            {
+                ref var listRef = ref CollectionsMarshal.GetValueRefOrAddDefault(mergedParents, entry.Key, out var exists);
+                if (!exists || listRef is null)
+                {
+                    listRef = entry.Value;
+                }
+                else
+                {
+                    listRef.AddRange(entry.Value);
+                }
+
+                mergedTargetCount++;
+                if ((mergedTargetCount % MergeProgressReportStep) == 0)
+                {
+                    mergeProgress?.Invoke(mergedTargetCount, totalMergeTargets);
+                }
+            }
+        }
+
+        mergeProgress?.Invoke(totalMergeTargets, totalMergeTargets);
         return mergedParents;
+    }
+
+    private static MergeShard[] CreateMergeShards()
+    {
+        var shards = new MergeShard[MergeShardCount];
+        for (var i = 0; i < shards.Length; i++)
+        {
+            shards[i] = new MergeShard();
+        }
+
+        return shards;
+    }
+
+    private static int GetMergeShardIndex(ulong targetAddress)
+    {
+        return (int)(targetAddress & (MergeShardCount - 1));
     }
 
     private static void AddMatchesForPointerValue(
@@ -347,9 +468,28 @@ public sealed class PointerScanService
         bool allowNegativeOffsets,
         LocalParentCollector local)
     {
+        if (sortedTargetAddresses.Length == 0)
+        {
+            return;
+        }
+
         ulong maxDelta = (ulong)Math.Max(0, maxOffset);
+        ulong minTarget = sortedTargetAddresses[0];
+        ulong maxTarget = sortedTargetAddresses[^1];
+
         if (!allowNegativeOffsets)
         {
+            if (pointerValue > maxTarget)
+            {
+                return;
+            }
+
+            ulong maxReach = pointerValue > ulong.MaxValue - maxDelta ? ulong.MaxValue : pointerValue + maxDelta;
+            if (maxReach < minTarget)
+            {
+                return;
+            }
+
             int startIndex = LowerBound(sortedTargetAddresses, pointerValue);
             for (int i = startIndex; i < sortedTargetAddresses.Length; i++)
             {
@@ -366,11 +506,18 @@ public sealed class PointerScanService
             return;
         }
 
-        ulong minTarget = pointerValue > maxDelta ? pointerValue - maxDelta : 0;
-        ulong maxTarget = pointerValue > ulong.MaxValue - maxDelta ? ulong.MaxValue : pointerValue + maxDelta;
+        ulong pointerMinRelevant = minTarget > maxDelta ? minTarget - maxDelta : 0;
+        ulong pointerMaxRelevant = maxTarget > ulong.MaxValue - maxDelta ? ulong.MaxValue : maxTarget + maxDelta;
+        if (pointerValue < pointerMinRelevant || pointerValue > pointerMaxRelevant)
+        {
+            return;
+        }
 
-        int rangeStart = LowerBound(sortedTargetAddresses, minTarget);
-        int rangeEnd = UpperBound(sortedTargetAddresses, maxTarget);
+        ulong minSearchTarget = pointerValue > maxDelta ? pointerValue - maxDelta : 0;
+        ulong maxSearchTarget = pointerValue > ulong.MaxValue - maxDelta ? ulong.MaxValue : pointerValue + maxDelta;
+
+        int rangeStart = LowerBound(sortedTargetAddresses, minSearchTarget);
+        int rangeEnd = UpperBound(sortedTargetAddresses, maxSearchTarget);
 
         for (int i = rangeStart; i < rangeEnd; i++)
         {
@@ -445,11 +592,12 @@ public sealed class PointerScanService
         return left * right;
     }
 
-    private static Dictionary<ulong, List<PointerChainNode>> GroupFrontierByAddress(IEnumerable<PointerChainNode> frontier)
+    private static Dictionary<ulong, List<PointerChainNode>> GroupFrontierByAddress(IReadOnlyList<PointerChainNode> frontier)
     {
-        var grouped = new Dictionary<ulong, List<PointerChainNode>>();
-        foreach (var node in frontier)
+        var grouped = new Dictionary<ulong, List<PointerChainNode>>(Math.Max(16, frontier.Count));
+        for (var i = 0; i < frontier.Count; i++)
         {
+            var node = frontier[i];
             if (!grouped.TryGetValue(node.CurrentAddress, out var nodes))
             {
                 nodes = new List<PointerChainNode>(1);
@@ -468,7 +616,10 @@ public sealed class PointerScanService
         ref long lastReportTicks,
         long processed,
         long total,
-        string status)
+        string status,
+        ScanProgressPhase phase = ScanProgressPhase.Scanning,
+        long phaseProcessed = 0,
+        long phaseTotal = 0)
     {
         long now = Stopwatch.GetTimestamp();
         long minDelta = Stopwatch.Frequency / 20;
@@ -483,7 +634,7 @@ public sealed class PointerScanService
             lastReportTicks = now;
         }
 
-        ReportProgress(progress, processed, total, status);
+        ReportProgress(progress, processed, total, status, phase, phaseProcessed, phaseTotal);
     }
 
     private bool IsStaticAddress(ulong address)
@@ -625,13 +776,23 @@ public sealed class PointerScanService
         return Math.Max(1, total);
     }
 
-    private static void ReportProgress(IProgress<ScanProgressInfo>? progress, long processed, long total, string status)
+    private static void ReportProgress(
+        IProgress<ScanProgressInfo>? progress,
+        long processed,
+        long total,
+        string status,
+        ScanProgressPhase phase = ScanProgressPhase.Scanning,
+        long phaseProcessed = 0,
+        long phaseTotal = 0)
     {
         progress?.Report(new ScanProgressInfo
         {
             Processed = processed,
             Total = total,
-            StatusText = status
+            StatusText = status,
+            Phase = phase,
+            PhaseProcessed = phaseProcessed,
+            PhaseTotal = phaseTotal
         });
     }
 
@@ -648,10 +809,16 @@ public sealed class PointerScanService
     [DllImport("kernel32.dll", SetLastError = true)]
     private static extern bool IsWow64Process(IntPtr processHandle, out bool wow64Process);
 
-    private sealed class PointerParentCandidate
+    private readonly struct PointerParentCandidate
     {
-        public ulong ParentAddress { get; set; }
-        public int Offset { get; set; }
+        public PointerParentCandidate(ulong parentAddress, int offset)
+        {
+            ParentAddress = parentAddress;
+            Offset = offset;
+        }
+
+        public ulong ParentAddress { get; }
+        public int Offset { get; }
     }
 
     private sealed class PointerChainNode
@@ -663,27 +830,74 @@ public sealed class PointerScanService
 
     private sealed class LocalParentCollector
     {
+        private byte[] _readBuffer;
+
+        public LocalParentCollector(int initialBufferSize)
+        {
+            _readBuffer = new byte[Math.Max(1024, initialBufferSize)];
+        }
+
         public Dictionary<ulong, List<PointerParentCandidate>> ParentsByTarget { get; } = new();
         public long PendingProgress { get; set; }
+        public int CandidateCount { get; private set; }
+
+        public byte[] GetReadBuffer(int requiredSize)
+        {
+            if (_readBuffer.Length < requiredSize)
+            {
+                _readBuffer = new byte[requiredSize];
+            }
+
+            return _readBuffer;
+        }
 
         public void AddCandidate(ulong childAddress, ulong parentAddress, int offset)
         {
-            if (!ParentsByTarget.TryGetValue(childAddress, out var list))
+            ref var listRef = ref CollectionsMarshal.GetValueRefOrAddDefault(ParentsByTarget, childAddress, out var exists);
+            if (!exists || listRef is null)
             {
-                list = new List<PointerParentCandidate>(8);
-                ParentsByTarget[childAddress] = list;
+                listRef = new List<PointerParentCandidate>(8);
             }
 
-            list.Add(new PointerParentCandidate
-            {
-                ParentAddress = parentAddress,
-                Offset = offset
-            });
+            listRef.Add(new PointerParentCandidate(parentAddress, offset));
+            CandidateCount++;
+        }
+
+        public void ClearCandidates()
+        {
+            ParentsByTarget.Clear();
+            CandidateCount = 0;
         }
     }
 
+
+    private sealed class MergeShard
+    {
+        public object SyncRoot { get; } = new();
+        public Dictionary<ulong, List<PointerParentCandidate>> ParentsByTarget { get; } = new();
+    }
     private readonly record struct ScanSlice(ulong Start, ulong End, bool IsWritable);
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 

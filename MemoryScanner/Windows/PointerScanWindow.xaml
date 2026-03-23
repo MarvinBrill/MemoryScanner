@@ -17,6 +17,8 @@
                 <Separator/>
                 <MenuItem Header="_Save" Click="MenuSaveResults_OnClick"/>
                 <MenuItem Header="Save _As..." Click="MenuSaveResultsAs_OnClick"/>
+                <Separator/>
+                <MenuItem Header="Save _Options..." Click="SaveOptions_OnClick"/>
             </MenuItem>
         </Menu>
 
@@ -115,12 +117,15 @@
 
             <StackPanel Grid.Row="0" Orientation="Horizontal" VerticalAlignment="Center" HorizontalAlignment="Right" Margin="0,0,0,8">
                 <TextBlock x:Name="PointerOptionsText" Foreground="Black" VerticalAlignment="Center" Margin="0,0,12,0"/>
+                <TextBlock x:Name="PointerPhaseText" Foreground="Black" VerticalAlignment="Center" Text="Idle" Margin="0,0,8,0"/>
                 <ProgressBar x:Name="PointerProgressBar" Width="320" Height="18" Minimum="0" Maximum="100" Value="0" Margin="0,0,8,0"/>
+                <ProgressBar x:Name="PointerMergeProgressBar" Width="320" Height="18" Minimum="0" Maximum="100" Value="0" Margin="0,0,8,0" Visibility="Collapsed"/>
                 <TextBlock x:Name="PointerProgressText" Foreground="Black" VerticalAlignment="Center" Text="Idle"/>
             </StackPanel>
 
             <WrapPanel Grid.Row="1" HorizontalAlignment="Right" VerticalAlignment="Center" ItemHeight="30">
                 <Button x:Name="PointerOptionsButton" Content="Scan Options" Width="110" Height="30" Margin="0,0,8,0" Click="PointerOptions_OnClick"/>
+                <Button x:Name="SaveOptionsButton" Content="Save Options" Width="110" Height="30" Margin="0,0,8,0" Click="SaveOptions_OnClick"/>
                 <Button x:Name="StartScanButton" Content="Start Scan" Width="110" Height="30" Margin="0,0,8,0" Click="StartScan_OnClick"/>
                 <Button x:Name="RescanButton" Content="Rescan" Width="100" Height="30" Margin="0,0,8,0" Click="Rescan_OnClick"/>
                 <Button x:Name="CancelScanButton" Content="Cancel" Width="90" Height="30" Margin="0,0,8,0" Click="CancelScan_OnClick"/>
@@ -129,5 +134,8 @@
         </Grid>
     </Grid>
 </Window>
+
+
+
 
 

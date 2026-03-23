@@ -15,6 +15,8 @@ public sealed class ScanService
     private readonly IMemoryAccessor _memory;
     private readonly MemoryRegionEnumerator _regionEnumerator;
     private readonly List<ScanCandidate> _candidates = new();
+    private delegate bool FirstScanMatcher(ReadOnlySpan<byte> span, int offset, out object value);
+    private delegate bool NextScanMatcher(object current, object? previous);
 
     public ScanService(IMemoryAccessor memory, MemoryRegionEnumerator regionEnumerator)
     {
@@ -37,6 +39,10 @@ public sealed class ScanService
 
         object? input = null;
         if (RequiresInput(comparison) && !TryParseValue(dataType, valueText, out input))
+        {
+            return results;
+        }
+        if (!TryCreateFirstScanMatcher(dataType, comparison, input, out var firstMatcher))
         {
             return results;
         }
@@ -119,7 +125,7 @@ public sealed class ScanService
                             TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, totalSteps, "Scanning memory");
                         }
 
-                        if (!TryReadAndMatchFirst(span, pos, dataType, comparison, input, out var value))
+                        if (!firstMatcher(span, pos, out var value))
                         {
                             continue;
                         }
@@ -184,9 +190,12 @@ public sealed class ScanService
         {
             return results;
         }
-
         var effectiveLimit = executionOptions.NormalizedResultLimit();
         var hasLimit = executionOptions.UseResultLimit;
+        if (!TryCreateNextScanMatcher(dataType, comparison, input, out var matcher))
+        {
+            return results;
+        }
 
         var snapshot = _candidates.ToArray();
         var total = Math.Max(1, snapshot.Length);
@@ -214,7 +223,7 @@ public sealed class ScanService
                     return local;
                 }
 
-                if (_memory.TryReadValue(candidate.Address, dataType, out var newValue) && MatchFast(dataType, comparison, newValue, input, candidate.LastValue))
+                if (_memory.TryReadValue(candidate.Address, dataType, out var newValue) && matcher(newValue, candidate.LastValue))
                 {
                     local.AddMatch(candidate.Address, newValue, dataType);
                 }
@@ -326,94 +335,210 @@ public sealed class ScanService
         local.Candidates.Clear();
     }
 
-    private static bool TryReadAndMatchFirst(
-        ReadOnlySpan<byte> span,
-        int offset,
+    private static bool TryCreateFirstScanMatcher(
         MemoryDataType type,
         ScanComparison comparison,
         object? input,
-        out object value)
+        out FirstScanMatcher matcher)
     {
-        value = 0;
-        if (input is null) return false;
+        matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+        {
+            value = 0;
+            return false;
+        };
+
+        if (input is null)
+        {
+            return false;
+        }
 
         switch (type)
         {
             case MemoryDataType.Byte:
             {
-                var current = span[offset];
-                var target = (byte)input;
-                if (!MatchDirect(comparison, current, target))
+                if (!TryCoerce(input, out byte target))
                 {
                     return false;
                 }
 
-                value = current;
+                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+                {
+                    var current = span[offset];
+                    if (!MatchDirect(comparison, current, target))
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = current;
+                    return true;
+                };
                 return true;
             }
             case MemoryDataType.Int16:
             {
-                var current = BinaryPrimitives.ReadInt16LittleEndian(span.Slice(offset, sizeof(short)));
-                var target = (short)input;
-                if (!MatchDirect(comparison, current, target))
+                if (!TryCoerce(input, out int target))
                 {
                     return false;
                 }
 
-                value = current;
+                short targetShort = (short)target;
+                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+                {
+                    var current = BinaryPrimitives.ReadInt16LittleEndian(span.Slice(offset, sizeof(short)));
+                    if (!MatchDirect(comparison, current, targetShort))
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = current;
+                    return true;
+                };
                 return true;
             }
             case MemoryDataType.Int32:
             {
-                var current = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
-                var target = (int)input;
-                if (!MatchDirect(comparison, current, target))
+                if (!TryCoerce(input, out int target))
                 {
                     return false;
                 }
 
-                value = current;
+                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+                {
+                    var current = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
+                    if (!MatchDirect(comparison, current, target))
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = current;
+                    return true;
+                };
                 return true;
             }
             case MemoryDataType.Int64:
             {
-                var current = BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long)));
-                var target = (long)input;
-                if (!MatchDirect(comparison, current, target))
+                if (!TryCoerce(input, out long target))
                 {
                     return false;
                 }
 
-                value = current;
+                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+                {
+                    var current = BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long)));
+                    if (!MatchDirect(comparison, current, target))
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = current;
+                    return true;
+                };
                 return true;
             }
             case MemoryDataType.Float:
             {
-                var current = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int))));
-                var target = (float)input;
-                if (!MatchDirect(comparison, current, target))
+                if (!TryCoerce(input, out float target))
                 {
                     return false;
                 }
 
-                value = current;
+                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+                {
+                    var current = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int))));
+                    if (!MatchDirect(comparison, current, target))
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = current;
+                    return true;
+                };
                 return true;
             }
             case MemoryDataType.Double:
             {
-                var current = BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long))));
-                var target = (double)input;
-                if (!MatchDirect(comparison, current, target))
+                if (!TryCoerce(input, out double target))
                 {
                     return false;
                 }
 
-                value = current;
+                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+                {
+                    var current = BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long))));
+                    if (!MatchDirect(comparison, current, target))
+                    {
+                        value = 0;
+                        return false;
+                    }
+
+                    value = current;
+                    return true;
+                };
                 return true;
             }
             default:
                 return false;
         }
+    }
+    private delegate bool CoerceFunc<T>(object value, out T result);
+
+    private static bool TryCreateNextScanMatcher(
+        MemoryDataType dataType,
+        ScanComparison comparison,
+        object? input,
+        out NextScanMatcher matcher)
+    {
+        switch (dataType)
+        {
+            case MemoryDataType.Byte:
+                matcher = CreateNextMatcher<byte>(comparison, input, TryCoerce);
+                return true;
+            case MemoryDataType.Int16:
+                matcher = CreateNextMatcher<int>(comparison, input, TryCoerce);
+                return true;
+            case MemoryDataType.Int32:
+                matcher = CreateNextMatcher<int>(comparison, input, TryCoerce);
+                return true;
+            case MemoryDataType.Int64:
+                matcher = CreateNextMatcher<long>(comparison, input, TryCoerce);
+                return true;
+            case MemoryDataType.Float:
+                matcher = CreateNextMatcher<float>(comparison, input, TryCoerce);
+                return true;
+            case MemoryDataType.Double:
+                matcher = CreateNextMatcher<double>(comparison, input, TryCoerce);
+                return true;
+            default:
+                matcher = (_, _) => false;
+                return false;
+        }
+    }
+
+    private static NextScanMatcher CreateNextMatcher<T>(
+        ScanComparison comparison,
+        object? input,
+        CoerceFunc<T> coerce)
+        where T : struct, IComparable<T>
+    {
+        T inputValue = default;
+        var hasInput = input is not null && coerce(input, out inputValue);
+
+        return (current, previous) =>
+        {
+            if (!coerce(current, out T currentValue))
+            {
+                return false;
+            }
+
+            T previousValue = default;
+            var hasPrevious = previous is not null && coerce(previous, out previousValue);
+            return MatchTyped(comparison, currentValue, inputValue, previousValue, hasInput, hasPrevious);
+        };
     }
 
     private static bool MatchFast(MemoryDataType type, ScanComparison comparison, object current, object? input, object? previous)
@@ -782,6 +907,14 @@ public sealed class ScanService
 
     private readonly record struct ScanSlice(ulong Start, ulong End);
 }
+
+
+
+
+
+
+
+
 
 
 

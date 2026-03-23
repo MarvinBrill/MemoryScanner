@@ -3,6 +3,7 @@ using MemoryScanner.Models;
 using MemoryScanner.Windows;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -23,7 +24,7 @@ public partial class MainWindow : Window
     private const int MinScanResultRefreshBatchSize = 32;
     private const int MaxScanResultRefreshBatchSize = 512;
     private readonly ObservableCollection<WatchEntry> _watchEntries = new();
-    private readonly ObservableCollection<ScanResultRow> _scanResults = new();
+    private readonly BulkObservableCollection<ScanResultRow> _scanResults = new();
     private readonly List<ScanResultRow> _allScanResults = new();
 
     private readonly IMemoryAccessor _memoryAccessor;
@@ -1501,12 +1502,15 @@ public partial class MainWindow : Window
     private void SetScanResults(IReadOnlyList<ScanResult> results)
     {
         _allScanResults.Clear();
+        if (_allScanResults.Capacity < results.Count)
+        {
+            _allScanResults.Capacity = results.Count;
+        }
+
+        var displayContext = new ScanResultDisplayContext(_memoryAccessor);
         foreach (var result in results)
         {
-            var displayAddress = _memoryAccessor.IsAttached
-                ? _memoryAccessor.FormatAddress(result.Address)
-                : $"0x{result.Address:X}";
-            _allScanResults.Add(new ScanResultRow(result, displayAddress, IsProcessBaseAddressText(displayAddress)));
+            _allScanResults.Add(new ScanResultRow(result, displayContext));
         }
 
         _scanResultPageIndex = 0;
@@ -1554,20 +1558,17 @@ public partial class MainWindow : Window
     private void ApplyScanResultPagination()
     {
         _scanResultRefreshCursor = 0;
-        _scanResults.Clear();
 
         if (_allScanResults.Count == 0)
         {
+            _scanResults.ReplaceAll(Array.Empty<ScanResultRow>());
             UpdateScanResultPageUi();
             return;
         }
 
         if (_scanResultPageSize == ShowAllPageSize)
         {
-            foreach (var row in _allScanResults)
-            {
-                _scanResults.Add(row);
-            }
+            _scanResults.ReplaceAll(_allScanResults);
 
             _scanResultPageIndex = 0;
             UpdateScanResultPageUi();
@@ -1582,10 +1583,7 @@ public partial class MainWindow : Window
 
         var startIndex = _scanResultPageIndex * _scanResultPageSize;
         var count = Math.Min(_scanResultPageSize, _allScanResults.Count - startIndex);
-        for (var i = 0; i < count; i++)
-        {
-            _scanResults.Add(_allScanResults[startIndex + i]);
-        }
+        _scanResults.ReplaceAll(_allScanResults.GetRange(startIndex, count));
 
         UpdateScanResultPageUi();
     }
@@ -1834,20 +1832,29 @@ public partial class MainWindow : Window
     public sealed class ScanResultRow : INotifyPropertyChanged
     {
         private string _valueText;
+        private readonly ScanResultDisplayContext _displayContext;
+        private string? _displayAddress;
+        private string? _addressHex;
+        private bool _isProcessBaseDisplay;
 
-        public ScanResultRow(ScanResult result, string displayAddress, bool isProcessBaseDisplay)
+        public ScanResultRow(ScanResult result, ScanResultDisplayContext displayContext)
         {
+            _displayContext = displayContext;
             Address = result.Address;
-            DisplayAddress = displayAddress;
-            IsProcessBaseDisplay = isProcessBaseDisplay;
             DataType = result.DataType;
             _valueText = result.ValueText;
-            AddressHex = $"0x{result.Address:X}";
         }
 
         public ulong Address { get; }
-        public string AddressHex { get; }
-        public string DisplayAddress { get; }
+        public string AddressHex => _addressHex ??= $"0x{Address:X}";
+        public string DisplayAddress
+        {
+            get
+            {
+                EnsureAddressPresentation();
+                return _displayAddress!;
+            }
+        }
         public string ValueText
         {
             get => _valueText;
@@ -1858,14 +1865,98 @@ public partial class MainWindow : Window
                 OnPropertyChanged();
             }
         }
-        public bool IsProcessBaseDisplay { get; }
+        public bool IsProcessBaseDisplay
+        {
+            get
+            {
+                EnsureAddressPresentation();
+                return _isProcessBaseDisplay;
+            }
+        }
         public MemoryDataType DataType { get; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
 
+        private void EnsureAddressPresentation()
+        {
+            if (_displayAddress is not null)
+            {
+                return;
+            }
+
+            var displayAddress = _displayContext.FormatAddress(Address);
+            _displayAddress = displayAddress;
+            _isProcessBaseDisplay = _displayContext.IsProcessBaseAddress(displayAddress);
+        }
+
         private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
         {
             PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+        }
+    }
+
+    public sealed class BulkObservableCollection<T> : ObservableCollection<T>
+    {
+        public void ReplaceAll(IEnumerable<T> items)
+        {
+            CheckReentrancy();
+            Items.Clear();
+            foreach (var item in items)
+            {
+                Items.Add(item);
+            }
+
+            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
+            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
+            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
+        }
+    }
+
+    public sealed class ScanResultDisplayContext
+    {
+        private readonly bool _useProcessBaseFormatting;
+        private readonly string? _processBasePrefix;
+        private readonly string _processName = "Process";
+        private readonly List<ModuleRange> _modules = new();
+
+        public ScanResultDisplayContext(IMemoryAccessor memoryAccessor)
+        {
+            if (!memoryAccessor.IsAttached)
+            {
+                return;
+            }
+
+            _useProcessBaseFormatting = true;
+            _processName = memoryAccessor.Process.ProcessName;
+            _processBasePrefix = _processName + "+0x";
+            _modules = memoryAccessor.Modules.ToList();
+        }
+
+        public string FormatAddress(ulong address)
+        {
+            if (!_useProcessBaseFormatting)
+            {
+                return $"0x{address:X}";
+            }
+
+            foreach (var module in _modules)
+            {
+                if (!module.Contains(address))
+                {
+                    continue;
+                }
+
+                var offset = address - module.Base;
+                return $"{_processName}+0x{offset:X}";
+            }
+
+            return $"0x{address:X}";
+        }
+
+        public bool IsProcessBaseAddress(string text)
+        {
+            return !string.IsNullOrWhiteSpace(_processBasePrefix)
+                && text.StartsWith(_processBasePrefix, StringComparison.OrdinalIgnoreCase);
         }
     }
 }

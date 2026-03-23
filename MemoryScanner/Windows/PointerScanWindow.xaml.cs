@@ -6,7 +6,10 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Globalization;
 using System.IO;
+using System.IO.Compression;
+using System.Runtime;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
@@ -31,6 +34,7 @@ public partial class PointerScanWindow : Window
     }
     private readonly PointerScanService _pointerScanService;
     private readonly IMemoryAccessor _memoryAccessor;
+    private readonly PointerDisplayContext _displayContext;
     private MemoryDataType _selectedValueDataType;
     private readonly DispatcherTimer _valueRefreshTimer;
 
@@ -38,6 +42,7 @@ public partial class PointerScanWindow : Window
     private CancellationTokenSource? _scanCts;
     private bool _isScanRunning;
     private PointerScanOptions _runtimeOptions = new();
+    private PointerSessionSaveOptions _saveOptions = new();
     private string? _currentSessionFilePath;
     private readonly ICollectionView _rowsView;
     private bool _isValueFilterActive;
@@ -45,6 +50,9 @@ public partial class PointerScanWindow : Window
     private object? _valueFilterPrimary;
     private object? _valueFilterSecondary;
     private int _pointerRefreshCursor;
+    private bool _cancelRequestedByUser;
+    private DateTime _mergePhaseStartedUtc = DateTime.MinValue;
+    private long _mergePhaseTotal;
 
     public BulkObservableCollection<PointerPathRow> Rows { get; } = new();
 
@@ -60,6 +68,7 @@ public partial class PointerScanWindow : Window
     {
         _pointerScanService = pointerScanService;
         _memoryAccessor = memoryAccessor;
+        _displayContext = new PointerDisplayContext(memoryAccessor);
         _targetAddress = targetAddress;
         _selectedValueDataType = valueDataType;
         _runtimeOptions = CloneOptions(initialOptions) ?? new PointerScanOptions();
@@ -117,7 +126,8 @@ public partial class PointerScanWindow : Window
             AddressRangeFrom = source.AddressRangeFrom,
             AddressRangeTo = source.AddressRangeTo,
             RequireRootInAddressRange = source.RequireRootInAddressRange,
-            RequireAllNodesInAddressRange = source.RequireAllNodesInAddressRange
+            RequireAllNodesInAddressRange = source.RequireAllNodesInAddressRange,
+            TrimMemoryAfterCancel = source.TrimMemoryAfterCancel
         };
     }
 
@@ -174,13 +184,13 @@ public partial class PointerScanWindow : Window
         _scanCts?.Cancel();
         _scanCts?.Dispose();
         _scanCts = new CancellationTokenSource();
+        _cancelRequestedByUser = false;
         Rows.ReplaceAll(Array.Empty<PointerPathRow>());
         _pointerRefreshCursor = 0;
 
         var progress = new Progress<ScanProgressInfo>(info =>
         {
-            PointerProgressBar.Value = info.Percent;
-            PointerProgressText.Text = $"{info.StatusText} {info.Percent:0.0}% ({info.Processed}/{info.Total})";
+            UpdateProgressUi(info);
         });
 
         SetBusyUi();
@@ -194,10 +204,22 @@ public partial class PointerScanWindow : Window
                 rows.Add(CreatePointerPathRow(result));
             }
 
+            var canceled = _scanCts?.IsCancellationRequested == true;
             Rows.ReplaceAll(rows);
             RefreshValuesAfterBulkLoad();
-            PointerProgressBar.Value = 100;
-            PointerProgressText.Text = $"Scan finished ({results.Count} results)";
+            if (canceled)
+            {
+                PointerProgressText.Text = $"Scan canceled ({results.Count} partial results)";
+            }
+            else
+            {
+                ResetMergePhaseEstimate();
+                PointerPhaseText.Text = "Scanning";
+                PointerProgressBar.Visibility = Visibility.Visible;
+                PointerMergeProgressBar.Visibility = Visibility.Collapsed;
+                PointerProgressBar.Value = 100;
+                PointerProgressText.Text = $"Scan finished ({results.Count} results)";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -213,7 +235,15 @@ public partial class PointerScanWindow : Window
         }
         finally
         {
+            var shouldTrim = _cancelRequestedByUser && _runtimeOptions.TrimMemoryAfterCancel;
+            _scanCts?.Dispose();
+            _scanCts = null;
             SetIdleUi();
+            _cancelRequestedByUser = false;
+            if (shouldTrim)
+            {
+                _ = TrimMemoryAfterCancelAsync();
+            }
         }
     }
 
@@ -247,11 +277,11 @@ public partial class PointerScanWindow : Window
         _scanCts?.Cancel();
         _scanCts?.Dispose();
         _scanCts = new CancellationTokenSource();
+        _cancelRequestedByUser = false;
 
         var progress = new Progress<ScanProgressInfo>(info =>
         {
-            PointerProgressBar.Value = info.Percent;
-            PointerProgressText.Text = $"{info.StatusText} {info.Percent:0.0}% ({info.Processed}/{info.Total})";
+            UpdateProgressUi(info);
         });
 
         SetBusyUi("Preparing rescan...");
@@ -265,11 +295,23 @@ public partial class PointerScanWindow : Window
                 rows.Add(CreatePointerPathRow(path));
             }
 
+            var canceled = _scanCts?.IsCancellationRequested == true;
             Rows.ReplaceAll(rows);
             _pointerRefreshCursor = 0;
             RefreshValuesAfterBulkLoad();
-            PointerProgressBar.Value = 100;
-            PointerProgressText.Text = $"Rescan finished ({rescanned.Count} results)";
+            if (canceled)
+            {
+                PointerProgressText.Text = $"Rescan canceled ({rescanned.Count} partial results)";
+            }
+            else
+            {
+                ResetMergePhaseEstimate();
+                PointerPhaseText.Text = "Scanning";
+                PointerProgressBar.Visibility = Visibility.Visible;
+                PointerMergeProgressBar.Visibility = Visibility.Collapsed;
+                PointerProgressBar.Value = 100;
+                PointerProgressText.Text = $"Rescan finished ({rescanned.Count} results)";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -285,7 +327,15 @@ public partial class PointerScanWindow : Window
         }
         finally
         {
+            var shouldTrim = _cancelRequestedByUser && _runtimeOptions.TrimMemoryAfterCancel;
+            _scanCts?.Dispose();
+            _scanCts = null;
             SetIdleUi();
+            _cancelRequestedByUser = false;
+            if (shouldTrim)
+            {
+                _ = TrimMemoryAfterCancelAsync();
+            }
         }
     }
     private void PointerOptions_OnClick(object sender, RoutedEventArgs e)
@@ -303,6 +353,23 @@ public partial class PointerScanWindow : Window
 
         _runtimeOptions = dialog.SelectedOptions;
         UpdateOptionsText();
+    }
+
+
+    private void SaveOptions_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (_isScanRunning)
+        {
+            return;
+        }
+
+        var dialog = new PointerSaveOptionsWindow(_saveOptions) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.SelectedOptions is null)
+        {
+            return;
+        }
+
+        _saveOptions = dialog.SelectedOptions;
     }
 
     private void ValueDataTypeBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -704,8 +771,9 @@ public partial class PointerScanWindow : Window
     {
         var dialog = new SaveFileDialog
         {
-            Filter = "Pointer Scan Session (*.json)|*.json|All files (*.*)|*.*",
-            DefaultExt = ".json",
+            Filter = "Compressed Pointer Scan Session (*.json.gz)|*.json.gz|Pointer Scan Session (*.json)|*.json|All files (*.*)|*.*",
+            DefaultExt = _saveOptions.EnableGZipCompression ? ".json.gz" : ".json",
+            AddExtension = true,
             FileName = string.IsNullOrWhiteSpace(_currentSessionFilePath) ? string.Empty : Path.GetFileName(_currentSessionFilePath)
         };
 
@@ -714,7 +782,7 @@ public partial class PointerScanWindow : Window
             return false;
         }
 
-        return SaveResultsToPath(dialog.FileName);
+        return SaveResultsToPath(NormalizeSavePath(dialog.FileName));
     }
 
     private bool SaveResultsToPath(string path)
@@ -724,6 +792,8 @@ public partial class PointerScanWindow : Window
             MessageBox.Show(this, "Cannot save: invalid options/address.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
+
+        path = NormalizeSavePath(path);
 
         try
         {
@@ -737,8 +807,18 @@ public partial class PointerScanWindow : Window
                 Results = Rows.Select(r => PreparePathForSave(r.Path)).ToList()
             };
 
-            var json = JsonSerializer.Serialize(session, new JsonSerializerOptions { WriteIndented = true });
-            File.WriteAllText(path, json);
+            var payload = SerializeSessionPayload(session);
+            if (_saveOptions.EnableGZipCompression)
+            {
+                using var file = File.Create(path);
+                using var gzip = new GZipStream(file, CompressionLevel.Optimal, leaveOpen: false);
+                gzip.Write(payload, 0, payload.Length);
+            }
+            else
+            {
+                File.WriteAllBytes(path, payload);
+            }
+
             _currentSessionFilePath = path;
             UpdateWindowTitle();
             return true;
@@ -750,11 +830,63 @@ public partial class PointerScanWindow : Window
         }
     }
 
+    private string NormalizeSavePath(string path)
+    {
+        if (_saveOptions.EnableGZipCompression && !path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+        {
+            return path + ".gz";
+        }
+
+        return path;
+    }
+
+    private byte[] SerializeSessionPayload(PointerScanSession session)
+    {
+        var serializerOptions = new JsonSerializerOptions
+        {
+            WriteIndented = !_saveOptions.CompactJson
+        };
+
+        if (_saveOptions.UseCompactSchema)
+        {
+            var compact = BuildCompactSession(session);
+            return JsonSerializer.SerializeToUtf8Bytes(compact, serializerOptions);
+        }
+
+        return JsonSerializer.SerializeToUtf8Bytes(session, serializerOptions);
+    }
+
+    private static PointerScanCompactSession BuildCompactSession(PointerScanSession session)
+    {
+        return new PointerScanCompactSession
+        {
+            Version = 1,
+            ProcessName = session.ProcessName,
+            SavedAtUtc = session.SavedAtUtc,
+            TargetAddress = session.TargetAddress,
+            ValueDataType = session.ValueDataType,
+            Options = session.Options,
+            Results = session.Results.Select(CreateCompactPath).ToList()
+        };
+    }
+
+    private static PointerPathCompact CreateCompactPath(PointerPath path)
+    {
+        return new PointerPathCompact
+        {
+            BaseAddress = path.BaseAddress,
+            PointerSizeBytes = path.PointerSizeBytes,
+            BaseModuleName = path.BaseModuleName,
+            BaseModuleOffset = path.BaseModuleOffset,
+            Offsets = path.Offsets.ToList()
+        };
+    }
+
     private void LoadResultsFromDialog()
     {
         var dialog = new OpenFileDialog
         {
-            Filter = "Pointer Scan Session (*.json)|*.json|All files (*.*)|*.*"
+            Filter = "Pointer Scan Session (*.json;*.json.gz;*.gz)|*.json;*.json.gz;*.gz|All files (*.*)|*.*"
         };
 
         if (dialog.ShowDialog(this) != true)
@@ -769,9 +901,13 @@ public partial class PointerScanWindow : Window
     {
         try
         {
-            var json = File.ReadAllText(path);
-            var session = JsonSerializer.Deserialize<PointerScanSession>(json);
-            if (session is null || session.Options is null)
+            var payload = File.ReadAllBytes(path);
+            if (IsGZipData(payload))
+            {
+                payload = DecompressGZip(payload);
+            }
+
+            if (!TryDeserializeSession(payload, out var session) || session is null || session.Options is null)
             {
                 MessageBox.Show(this, "Invalid file format.", "Load Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -812,8 +948,71 @@ public partial class PointerScanWindow : Window
         }
     }
 
+    private static bool TryDeserializeSession(byte[] payload, out PointerScanSession? session)
+    {
+        session = null;
+
+        var serializerOptions = new JsonSerializerOptions
+        {
+            PropertyNameCaseInsensitive = true
+        };
+
+        var regular = JsonSerializer.Deserialize<PointerScanSession>(payload, serializerOptions);
+        if (regular is not null && regular.Options is not null && regular.Results is not null)
+        {
+            session = regular;
+            return true;
+        }
+
+        var compact = JsonSerializer.Deserialize<PointerScanCompactSession>(payload, serializerOptions);
+        if (compact is null || compact.Options is null || compact.Results is null)
+        {
+            return false;
+        }
+
+        session = ConvertCompactSession(compact);
+        return true;
+    }
+
+    private static PointerScanSession ConvertCompactSession(PointerScanCompactSession compact)
+    {
+        return new PointerScanSession
+        {
+            ProcessName = compact.ProcessName,
+            SavedAtUtc = compact.SavedAtUtc,
+            TargetAddress = compact.TargetAddress,
+            ValueDataType = compact.ValueDataType,
+            Options = compact.Options,
+            Results = compact.Results.Select(x => new PointerPath
+            {
+                BaseAddress = x.BaseAddress,
+                PointerSizeBytes = x.PointerSizeBytes,
+                BaseModuleName = x.BaseModuleName,
+                BaseModuleOffset = x.BaseModuleOffset,
+                Offsets = x.Offsets?.ToList() ?? new List<int>(),
+                DisplayExpression = string.Empty,
+                FinalAddressPreview = compact.TargetAddress
+            }).ToList()
+        };
+    }
+
+    private static bool IsGZipData(byte[] payload)
+    {
+        return payload.Length >= 2 && payload[0] == 0x1F && payload[1] == 0x8B;
+    }
+
+    private static byte[] DecompressGZip(byte[] payload)
+    {
+        using var source = new MemoryStream(payload);
+        using var gzip = new GZipStream(source, CompressionMode.Decompress);
+        using var target = new MemoryStream();
+        gzip.CopyTo(target);
+        return target.ToArray();
+    }
+
     private void CancelScan_OnClick(object sender, RoutedEventArgs e)
     {
+        _cancelRequestedByUser = true;
         _scanCts?.Cancel();
     }
 
@@ -861,6 +1060,7 @@ public partial class PointerScanWindow : Window
         options.AddressRangeTo = _runtimeOptions.AddressRangeTo;
         options.RequireRootInAddressRange = _runtimeOptions.RequireRootInAddressRange;
         options.RequireAllNodesInAddressRange = _runtimeOptions.RequireAllNodesInAddressRange;
+        options.TrimMemoryAfterCancel = _runtimeOptions.TrimMemoryAfterCancel;
 
         return true;
     }
@@ -946,10 +1146,7 @@ public partial class PointerScanWindow : Window
 
     private PointerPathRow CreatePointerPathRow(PointerPath path)
     {
-        return new PointerPathRow(path)
-        {
-            PointerExpressionText = BuildPointerExpression(path)
-        };
+        return new PointerPathRow(path, BuildPointerExpression);
     }
 
     private static string FormatOffset(int offset)
@@ -960,9 +1157,9 @@ public partial class PointerScanWindow : Window
     private string BuildPointerExpression(PointerPath path)
     {
         string baseText;
-        if (_memoryAccessor.IsAttached)
+        if (_displayContext.IsAttached)
         {
-            baseText = _memoryAccessor.FormatAddress(path.BaseAddress);
+            baseText = _displayContext.FormatAddress(path.BaseAddress);
         }
         else if (!string.IsNullOrWhiteSpace(path.BaseModuleName))
         {
@@ -1074,8 +1271,6 @@ public partial class PointerScanWindow : Window
 
     private void UpdatePointerRowValue(PointerPathRow row)
     {
-        row.PointerExpressionText = BuildPointerExpression(row.Path);
-
         if (TryResolvePointerValue(row.Path, out var rawValue, out var valueText, out var currentAddressText))
         {
             row.ValueText = valueText;
@@ -1191,7 +1386,10 @@ public partial class PointerScanWindow : Window
 
         for (var i = 0; i < sourcePaths.Count; i++)
         {
-            cancellationToken.ThrowIfCancellationRequested();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                break;
+            }
 
             var path = sourcePaths[i];
             if (TryResolvePointerFinalAddress(path, out var resolvedAddress) && resolvedAddress == newTargetAddress)
@@ -1214,7 +1412,7 @@ public partial class PointerScanWindow : Window
         {
             Processed = total,
             Total = total,
-            StatusText = "Rescan finished"
+            StatusText = cancellationToken.IsCancellationRequested ? "Rescan canceled" : "Rescan finished"
         });
 
         return kept;
@@ -1258,7 +1456,7 @@ public partial class PointerScanWindow : Window
             return false;
         }
 
-        currentAddressText = _memoryAccessor.FormatAddress(finalAddress);
+        currentAddressText = _displayContext.FormatAddress(finalAddress);
 
         if (!_memoryAccessor.TryReadValue(finalAddress, _selectedValueDataType, out var value))
         {
@@ -1276,6 +1474,64 @@ public partial class PointerScanWindow : Window
         return true;
     }
 
+    private void UpdateProgressUi(ScanProgressInfo info)
+    {
+        var isMerge = info.Phase == ScanProgressPhase.Merging;
+        var hasPhaseTotals = info.PhaseTotal > 0;
+        var phaseProcessed = hasPhaseTotals ? info.PhaseProcessed : info.Processed;
+        var phaseTotal = hasPhaseTotals ? info.PhaseTotal : info.Total;
+        var phasePercent = hasPhaseTotals ? info.PhasePercent : info.Percent;
+        var safePhaseTotal = Math.Max(1, phaseTotal);
+
+        PointerPhaseText.Text = isMerge ? "Merging" : "Scanning";
+        PointerProgressBar.Visibility = isMerge ? Visibility.Collapsed : Visibility.Visible;
+        PointerMergeProgressBar.Visibility = isMerge ? Visibility.Visible : Visibility.Collapsed;
+
+        if (isMerge)
+        {
+            PointerMergeProgressBar.Value = phasePercent;
+
+            if (!hasPhaseTotals)
+            {
+                ResetMergePhaseEstimate();
+                PointerProgressText.Text = $"{info.StatusText} {phasePercent:0.0}% ({phaseProcessed}/{safePhaseTotal}) | Overall {info.Percent:0.0}%";
+                return;
+            }
+
+            if (_mergePhaseTotal != phaseTotal || _mergePhaseStartedUtc == DateTime.MinValue || phaseProcessed <= 1)
+            {
+                _mergePhaseTotal = phaseTotal;
+                _mergePhaseStartedUtc = DateTime.UtcNow;
+            }
+
+            var etaText = string.Empty;
+            if (phaseProcessed > 0 && phaseProcessed < phaseTotal && _mergePhaseStartedUtc != DateTime.MinValue)
+            {
+                var elapsed = DateTime.UtcNow - _mergePhaseStartedUtc;
+                if (elapsed.TotalMilliseconds >= 300)
+                {
+                    var ratePerSecond = phaseProcessed / Math.Max(elapsed.TotalSeconds, 0.001);
+                    if (ratePerSecond > 0.01)
+                    {
+                        var remainingSeconds = (phaseTotal - phaseProcessed) / ratePerSecond;
+                        if (!double.IsNaN(remainingSeconds) && !double.IsInfinity(remainingSeconds) && remainingSeconds >= 0)
+                        {
+                            etaText = $" | ETA {FormatEta(TimeSpan.FromSeconds(remainingSeconds))}";
+                        }
+                    }
+                }
+            }
+
+            PointerProgressText.Text = $"{info.StatusText} {phasePercent:0.0}% ({phaseProcessed}/{safePhaseTotal}){etaText} | Overall {info.Percent:0.0}%";
+        }
+        else
+        {
+            ResetMergePhaseEstimate();
+            PointerProgressBar.Value = phasePercent;
+            PointerProgressText.Text = $"{info.StatusText} {phasePercent:0.0}% ({phaseProcessed}/{safePhaseTotal})";
+        }
+    }
+
     private void SetBusyUi(string statusText = "Preparing scan...")
     {
         _isScanRunning = true;
@@ -1283,8 +1539,15 @@ public partial class PointerScanWindow : Window
         StartScanButton.IsEnabled = false;
         RescanButton.IsEnabled = false;
         PointerOptionsButton.IsEnabled = false;
+        SaveOptionsButton.IsEnabled = false;
         CancelScanButton.IsEnabled = true;
+
+        ResetMergePhaseEstimate();
+        PointerPhaseText.Text = "Scanning";
+        PointerProgressBar.Visibility = Visibility.Visible;
+        PointerMergeProgressBar.Visibility = Visibility.Collapsed;
         PointerProgressBar.Value = 0;
+        PointerMergeProgressBar.Value = 0;
         PointerProgressText.Text = statusText;
     }
 
@@ -1295,11 +1558,34 @@ public partial class PointerScanWindow : Window
         StartScanButton.IsEnabled = true;
         RescanButton.IsEnabled = true;
         PointerOptionsButton.IsEnabled = true;
+        SaveOptionsButton.IsEnabled = true;
         CancelScanButton.IsEnabled = false;
+
+        ResetMergePhaseEstimate();
+        PointerPhaseText.Text = "Idle";
+        PointerProgressBar.Visibility = Visibility.Visible;
+        PointerMergeProgressBar.Visibility = Visibility.Collapsed;
+
         if (PointerProgressText.Text == "Preparing scan..." || PointerProgressText.Text == "Preparing rescan..." || PointerProgressText.Text == "Idle")
         {
             PointerProgressText.Text = "Idle";
         }
+    }
+
+    private void ResetMergePhaseEstimate()
+    {
+        _mergePhaseStartedUtc = DateTime.MinValue;
+        _mergePhaseTotal = 0;
+    }
+
+    private static string FormatEta(TimeSpan remaining)
+    {
+        if (remaining.TotalHours >= 1)
+        {
+            return remaining.ToString(@"hh\:mm\:ss", CultureInfo.InvariantCulture);
+        }
+
+        return remaining.ToString(@"mm\:ss", CultureInfo.InvariantCulture);
     }
     private void UpdateOptionsText()
     {
@@ -1323,7 +1609,8 @@ public partial class PointerScanWindow : Window
             : "off";
         var rootInRangeText = _runtimeOptions.RequireRootInAddressRange ? "on" : "off";
         var allNodesInRangeText = _runtimeOptions.RequireAllNodesInAddressRange ? "on" : "off";
-        PointerOptionsText.Text = $"Options: Type {_selectedValueDataType}, Threads {_runtimeOptions.ThreadCount}, Limit {limitText}, Width {widthText}, Range {rangeText}, RootInRange {rootInRangeText}, AllNodesInRange {allNodesInRangeText}, Process+Base only {processBaseOnlyText}, RO nodes off {readOnlyText}, No loops {loopText}, Stop@static {stopStaticText}, Dedupe {dedupeText}, NegOff {negativeOffsetsText}, Preset d{_runtimeOptions.MaxDepth}/off{_runtimeOptions.MaxOffset}/a{_runtimeOptions.Alignment}, Update {updateMs} ms";
+        var trimOnCancelText = _runtimeOptions.TrimMemoryAfterCancel ? "on" : "off";
+        PointerOptionsText.Text = $"Options: Type {_selectedValueDataType}, Threads {_runtimeOptions.ThreadCount}, Limit {limitText}, Width {widthText}, Range {rangeText}, RootInRange {rootInRangeText}, AllNodesInRange {allNodesInRangeText}, Process+Base only {processBaseOnlyText}, RO nodes off {readOnlyText}, No loops {loopText}, Stop@static {stopStaticText}, Dedupe {dedupeText}, NegOff {negativeOffsetsText}, Preset d{_runtimeOptions.MaxDepth}/off{_runtimeOptions.MaxOffset}/a{_runtimeOptions.Alignment}, Update {updateMs} ms, TrimOnCancel {trimOnCancelText}";
     }
 
     private void UpdateWindowTitle()
@@ -1339,6 +1626,50 @@ public partial class PointerScanWindow : Window
     {
         return ex.Flatten().InnerExceptions.All(inner => inner is OperationCanceledException);
     }
+    private async Task TrimMemoryAfterCancelAsync()
+    {
+        var previousText = PointerProgressText.Text;
+        PointerProgressText.Text = "Scan canceled - trimming memory...";
+
+        await Task.Run(() =>
+        {
+            try
+            {
+                GCSettings.LargeObjectHeapCompactionMode = GCLargeObjectHeapCompactionMode.CompactOnce;
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+                GC.WaitForPendingFinalizers();
+                GC.Collect(2, GCCollectionMode.Forced, true, true);
+            }
+            catch
+            {
+                // Keep cancel path robust.
+            }
+
+            try
+            {
+                EmptyWorkingSet(GetCurrentProcess());
+            }
+            catch
+            {
+                // Best-effort working set trim.
+            }
+        });
+
+        if (PointerProgressText.Text.StartsWith("Scan canceled", StringComparison.OrdinalIgnoreCase)
+            || PointerProgressText.Text.StartsWith("Rescan canceled", StringComparison.OrdinalIgnoreCase)
+            || PointerProgressText.Text.Contains("trimming memory", StringComparison.OrdinalIgnoreCase))
+        {
+            PointerProgressText.Text = string.IsNullOrWhiteSpace(previousText)
+                ? "Scan canceled - memory trimmed"
+                : previousText + " | memory trimmed";
+        }
+    }
+
+    [DllImport("psapi.dll")]
+    private static extern bool EmptyWorkingSet(IntPtr hProcess);
+
+    [DllImport("kernel32.dll")]
+    private static extern IntPtr GetCurrentProcess();
 
     protected override void OnClosed(EventArgs e)
     {
@@ -1368,25 +1699,36 @@ public partial class PointerScanWindow : Window
 
     public sealed class PointerPathRow : INotifyPropertyChanged
     {
-        private string _pointerExpressionText = string.Empty;
+        private readonly Func<PointerPath, string>? _pointerExpressionFactory;
+        private string? _pointerExpressionText;
+        private string? _baseAddressText;
+        private string? _offsetsDisplay;
         private string _valueText = string.Empty;
         private string _currentAddressText = "<unresolved>";
         private object? _resolvedValue;
         private bool _hasResolvedValue;
 
-        public PointerPathRow(PointerPath path)
+        public PointerPathRow(PointerPath path, Func<PointerPath, string>? pointerExpressionFactory = null)
         {
             Path = path;
-            OffsetsDisplay = string.Join(", ", path.Offsets.Select(PointerScanWindow.FormatOffset));
+            _pointerExpressionFactory = pointerExpressionFactory;
         }
 
         public PointerPath Path { get; }
-        public string BaseAddress => $"0x{Path.BaseAddress:X}";
-        public string OffsetsDisplay { get; }
+        public string BaseAddress => _baseAddressText ??= $"0x{Path.BaseAddress:X}";
+        public string OffsetsDisplay => _offsetsDisplay ??= string.Join(", ", Path.Offsets.Select(PointerScanWindow.FormatOffset));
 
         public string PointerExpressionText
         {
-            get => _pointerExpressionText;
+            get
+            {
+                if (_pointerExpressionText is null)
+                {
+                    _pointerExpressionText = _pointerExpressionFactory?.Invoke(Path) ?? Path.DisplayExpression;
+                }
+
+                return _pointerExpressionText;
+            }
             set
             {
                 if (_pointerExpressionText == value) return;
@@ -1449,6 +1791,67 @@ public partial class PointerScanWindow : Window
         }
     }
 
+    private sealed class PointerDisplayContext
+    {
+        private readonly string _processName = "Process";
+        private readonly IReadOnlyList<ModuleRange> _modules = Array.Empty<ModuleRange>();
+
+        public PointerDisplayContext(IMemoryAccessor memoryAccessor)
+        {
+            if (!memoryAccessor.IsAttached)
+            {
+                return;
+            }
+
+            IsAttached = true;
+            _processName = memoryAccessor.Process.ProcessName;
+            _modules = memoryAccessor.Modules.ToList();
+        }
+
+        public bool IsAttached { get; }
+
+        public string FormatAddress(ulong address)
+        {
+            if (!IsAttached)
+            {
+                return $"0x{address:X}";
+            }
+
+            foreach (var module in _modules)
+            {
+                if (!module.Contains(address))
+                {
+                    continue;
+                }
+
+                var offset = address - module.Base;
+                return $"{_processName}+0x{offset:X}";
+            }
+
+            return $"0x{address:X}";
+        }
+    }
+
+    private sealed class PointerScanCompactSession
+    {
+        public int Version { get; set; } = 1;
+        public string ProcessName { get; set; } = string.Empty;
+        public DateTime SavedAtUtc { get; set; }
+        public ulong TargetAddress { get; set; }
+        public MemoryDataType ValueDataType { get; set; } = MemoryDataType.Int32;
+        public PointerScanOptions Options { get; set; } = new();
+        public List<PointerPathCompact> Results { get; set; } = new();
+    }
+
+    private sealed class PointerPathCompact
+    {
+        public ulong BaseAddress { get; set; }
+        public int PointerSizeBytes { get; set; }
+        public string BaseModuleName { get; set; } = string.Empty;
+        public ulong BaseModuleOffset { get; set; }
+        public List<int> Offsets { get; set; } = new();
+    }
+
     private sealed class PointerScanSession
     {
         public string ProcessName { get; set; } = string.Empty;
@@ -1459,6 +1862,36 @@ public partial class PointerScanWindow : Window
         public List<PointerPath> Results { get; set; } = new();
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
