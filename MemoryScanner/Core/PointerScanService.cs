@@ -1,4 +1,5 @@
 using MemoryScanner.Models;
+using System.Collections.Concurrent;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
@@ -68,7 +69,7 @@ public sealed class PointerScanService
         };
 
         var visited = options.AggressiveNodeDeduplication
-            ? new HashSet<(ulong ParentAddress, int Depth)>()
+            ? new ConcurrentDictionary<(ulong ParentAddress, int Depth), byte>()
             : null;
         int limitReached = 0;
         var resultLimit = options.UseResultLimit ? options.NormalizedResultLimit() : int.MaxValue;
@@ -104,6 +105,7 @@ public sealed class PointerScanService
             }
 
             var scanStatus = $"Scanning d{depth + 1}/{options.MaxDepth} targets {sortedTargets.Length}";
+            long mergeMapTotal = 1;
             var parentMap = FindParentsForTargets(
                 sortedTargets,
                 options,
@@ -124,121 +126,220 @@ public sealed class PointerScanService
                 },
                 (mergeProcessed, mergeTotal) =>
                 {
+                    mergeTotal = Math.Max(1, mergeTotal);
+                    mergeMapTotal = mergeTotal;
+
                     var processedGlobal = Volatile.Read(ref processedWork);
-                    var mergeStatus = $"Merging d{depth + 1}/{options.MaxDepth} targets {mergeProcessed}/{mergeTotal}";
-                    if (mergeProcessed >= mergeTotal)
+                    var mergeStatus = $"Merging map d{depth + 1}/{options.MaxDepth} {mergeProcessed}/{mergeTotal}";
+                    var phaseTotal = mergeTotal + Math.Max(1, sortedTargets.Length);
+                    var phaseProcessed = Math.Min(mergeProcessed, mergeTotal);
+
+                    if (phaseProcessed >= mergeTotal)
                     {
-                        ReportProgress(
-                            progress,
-                            processedGlobal,
-                            totalWorkEstimate,
-                            mergeStatus,
-                            ScanProgressPhase.Merging,
-                            mergeProcessed,
-                            mergeTotal);
+                        phaseProcessed = Math.Max(0, mergeTotal - 1);
                     }
-                    else
-                    {
-                        TryReportProgressThrottled(
-                            progress,
-                            progressGate,
-                            ref lastReportTicks,
-                            processedGlobal,
-                            totalWorkEstimate,
-                            mergeStatus,
-                            ScanProgressPhase.Merging,
-                            mergeProcessed,
-                            mergeTotal);
-                    }
+
+                    TryReportProgressThrottled(
+                        progress,
+                        progressGate,
+                        ref lastReportTicks,
+                        processedGlobal,
+                        totalWorkEstimate,
+                        mergeStatus,
+                        ScanProgressPhase.Merging,
+                        phaseProcessed,
+                        phaseTotal);
                 });
 
             var nextFrontier = new List<PointerChainNode>(Math.Max(128, frontier.Count * 2));
+            var mergeExpansionWorkTotal = CalculateMergeExpansionWork(sortedTargets, groupedFrontier, parentMap);
+            var mergePhaseTotal = Math.Max(1, mergeMapTotal + mergeExpansionWorkTotal);
+            long mergeExpansionWorkProcessed = 0;
+            int resultSlots = results.Count;
+            var nextFrontierMergeLock = new object();
+            var resultMergeLock = new object();
 
-            foreach (var target in sortedTargets)
+            void ReportMergeExpansionProgress(long processedCount)
             {
-                if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
-                {
-                    break;
-                }
+                processedCount = Math.Min(processedCount, mergeExpansionWorkTotal);
+                var processedGlobal = Volatile.Read(ref processedWork);
+                var mergePhaseProcessed = Math.Min(mergePhaseTotal, mergeMapTotal + processedCount);
+                var mergeStatus = $"Merging chains d{depth + 1}/{options.MaxDepth} {processedCount}/{mergeExpansionWorkTotal}";
+                TryReportProgressThrottled(
+                    progress,
+                    progressGate,
+                    ref lastReportTicks,
+                    processedGlobal,
+                    totalWorkEstimate,
+                    mergeStatus,
+                    ScanProgressPhase.Merging,
+                    mergePhaseProcessed,
+                    mergePhaseTotal);
+            }
 
-                if (!parentMap.TryGetValue(target, out var parents) || parents.Count == 0)
-                {
-                    continue;
-                }
+            var expansionParallelOptions = new ParallelOptions
+            {
+                MaxDegreeOfParallelism = options.NormalizedThreadCount()
+            };
 
-                if (!groupedFrontier.TryGetValue(target, out var nodesForTarget))
-                {
-                    continue;
-                }
-
-                foreach (var node in nodesForTarget)
+            Parallel.ForEach(
+                sortedTargets,
+                expansionParallelOptions,
+                () => new LocalExpansionCollector(),
+                (target, loopState, local) =>
                 {
                     if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                     {
-                        break;
+                        loopState.Stop();
+                        return local;
                     }
 
-                    foreach (var parent in parents)
+                    if (!parentMap.TryGetValue(target, out var parents) || parents.Count == 0)
+                    {
+                        return local;
+                    }
+
+                    if (!groupedFrontier.TryGetValue(target, out var nodesForTarget))
+                    {
+                        return local;
+                    }
+
+                    foreach (var node in nodesForTarget)
                     {
                         if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                         {
+                            loopState.Stop();
                             break;
                         }
 
-                        if (visited is not null)
+                        foreach (var parent in parents)
                         {
-                            var key = (parent.ParentAddress, depth);
-                            if (!visited.Add(key))
+                            if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
+                            {
+                                loopState.Stop();
+                                break;
+                            }
+
+                            local.PendingProgress++;
+                            if ((local.PendingProgress & 4095) == 0)
+                            {
+                                var processed = Interlocked.Add(ref mergeExpansionWorkProcessed, local.PendingProgress);
+                                local.PendingProgress = 0;
+                                ReportMergeExpansionProgress(processed);
+                            }
+
+                            if (visited is not null)
+                            {
+                                var key = (parent.ParentAddress, depth);
+                                if (!visited.TryAdd(key, 0))
+                                {
+                                    continue;
+                                }
+                            }
+
+                            if (options.NoLoopingPointers && Array.IndexOf(node.TraversedAddresses, parent.ParentAddress) >= 0)
                             {
                                 continue;
                             }
-                        }
 
-                        if (options.NoLoopingPointers && Array.IndexOf(node.TraversedAddresses, parent.ParentAddress) >= 0)
-                        {
-                            continue;
-                        }
+                            var offsets = new List<int>(node.Offsets.Count + 1) { parent.Offset };
+                            offsets.AddRange(node.Offsets);
 
-                        var offsets = new List<int>(node.Offsets.Count + 1) { parent.Offset };
-                        offsets.AddRange(node.Offsets);
+                            var traversedAddresses = options.NoLoopingPointers
+                                ? BuildExtendedTrail(node.TraversedAddresses, parent.ParentAddress)
+                                : Array.Empty<ulong>();
 
-                        var traversedAddresses = options.NoLoopingPointers
-                            ? BuildExtendedTrail(node.TraversedAddresses, parent.ParentAddress)
-                            : Array.Empty<ulong>();
-
-                        var chainNode = new PointerChainNode
-                        {
-                            CurrentAddress = parent.ParentAddress,
-                            Offsets = offsets,
-                            TraversedAddresses = traversedAddresses
-                        };
-
-                        if (hasAddressRange && options.RequireAllNodesInAddressRange && !IsAddressInRange(chainNode.CurrentAddress, rangeMin, rangeMax))
-                        {
-                            continue;
-                        }
-
-                        var hasStaticRoot = IsStaticAddress(chainNode.CurrentAddress);
-                        if (!(options.StopTraversingAfterStaticRoot && hasStaticRoot))
-                        {
-                            nextFrontier.Add(chainNode);
-                        }
-
-                        if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, pointerSizeBytes, hasAddressRange, options.RequireRootInAddressRange, rangeMin, rangeMax, out var path))
-                        {
-                            if (results.Count < resultLimit)
+                            var chainNode = new PointerChainNode
                             {
-                                results.Add(path);
+                                CurrentAddress = parent.ParentAddress,
+                                Offsets = offsets,
+                                TraversedAddresses = traversedAddresses
+                            };
+
+                            if (hasAddressRange && options.RequireAllNodesInAddressRange && !IsAddressInRange(chainNode.CurrentAddress, rangeMin, rangeMax))
+                            {
+                                continue;
                             }
 
-                            if (results.Count >= resultLimit)
+                            var hasStaticRoot = IsStaticAddress(chainNode.CurrentAddress);
+                            if (!(options.StopTraversingAfterStaticRoot && hasStaticRoot))
                             {
-                                Volatile.Write(ref limitReached, 1);
-                                break;
+                                local.NextFrontier.Add(chainNode);
+                                if (local.NextFrontier.Count >= 4096)
+                                {
+                                    lock (nextFrontierMergeLock)
+                                    {
+                                        nextFrontier.AddRange(local.NextFrontier);
+                                    }
+
+                                    local.NextFrontier.Clear();
+                                }
+                            }
+
+                            if (TryMakeResult(chainNode, targetAddress, options.RequireStaticRoot, pointerSizeBytes, hasAddressRange, options.RequireRootInAddressRange, rangeMin, rangeMax, out var path))
+                            {
+                                var slot = Interlocked.Increment(ref resultSlots);
+                                if (slot <= resultLimit)
+                                {
+                                    local.Results.Add(path);
+                                    if (local.Results.Count >= 512)
+                                    {
+                                        lock (resultMergeLock)
+                                        {
+                                            results.AddRange(local.Results);
+                                        }
+
+                                        local.Results.Clear();
+                                    }
+                                }
+                                else
+                                {
+                                    Volatile.Write(ref limitReached, 1);
+                                    loopState.Stop();
+                                    break;
+                                }
                             }
                         }
                     }
-                }
+
+                    return local;
+                },
+                local =>
+                {
+                    if (local.PendingProgress > 0)
+                    {
+                        var processed = Interlocked.Add(ref mergeExpansionWorkProcessed, local.PendingProgress);
+                        ReportMergeExpansionProgress(processed);
+                    }
+
+                    if (local.NextFrontier.Count > 0)
+                    {
+                        lock (nextFrontierMergeLock)
+                        {
+                            nextFrontier.AddRange(local.NextFrontier);
+                        }
+                    }
+
+                    if (local.Results.Count > 0)
+                    {
+                        lock (resultMergeLock)
+                        {
+                            results.AddRange(local.Results);
+                        }
+                    }
+                });
+
+            {
+                var processedGlobal = Volatile.Read(ref processedWork);
+                var mergeStatus = $"Merging chains d{depth + 1}/{options.MaxDepth} {mergeExpansionWorkTotal}/{mergeExpansionWorkTotal}";
+                ReportProgress(
+                    progress,
+                    processedGlobal,
+                    totalWorkEstimate,
+                    mergeStatus,
+                    ScanProgressPhase.Merging,
+                    mergePhaseTotal,
+                    mergePhaseTotal);
             }
 
             groupedFrontier.Clear();
@@ -608,6 +709,42 @@ public sealed class PointerScanService
         }
 
         return grouped;
+    }
+
+    private static long CalculateMergeExpansionWork(
+        IReadOnlyList<ulong> sortedTargets,
+        IReadOnlyDictionary<ulong, List<PointerChainNode>> groupedFrontier,
+        IReadOnlyDictionary<ulong, List<PointerParentCandidate>> parentMap)
+    {
+        long total = 0;
+
+        foreach (var target in sortedTargets)
+        {
+            if (!parentMap.TryGetValue(target, out var parents) || parents.Count == 0)
+            {
+                continue;
+            }
+
+            if (!groupedFrontier.TryGetValue(target, out var nodes) || nodes.Count == 0)
+            {
+                continue;
+            }
+
+            long work = (long)parents.Count * nodes.Count;
+            if (work <= 0)
+            {
+                continue;
+            }
+
+            if (long.MaxValue - total < work)
+            {
+                return long.MaxValue;
+            }
+
+            total += work;
+        }
+
+        return Math.Max(1, total);
     }
 
     private static void TryReportProgressThrottled(
@@ -828,6 +965,13 @@ public sealed class PointerScanService
         public ulong[] TraversedAddresses { get; set; } = Array.Empty<ulong>();
     }
 
+
+    private sealed class LocalExpansionCollector
+    {
+        public List<PointerChainNode> NextFrontier { get; } = new(1024);
+        public List<PointerPath> Results { get; } = new(128);
+        public long PendingProgress { get; set; }
+    }
     private sealed class LocalParentCollector
     {
         private byte[] _readBuffer;
@@ -878,6 +1022,17 @@ public sealed class PointerScanService
     }
     private readonly record struct ScanSlice(ulong Start, ulong End, bool IsWritable);
 }
+
+
+
+
+
+
+
+
+
+
+
 
 
 

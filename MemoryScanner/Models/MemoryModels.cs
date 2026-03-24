@@ -149,7 +149,7 @@ public sealed class ScanResult
 public sealed class PointerScanOptions
 {
     public int MaxDepth { get; set; } = 5;
-    public int MaxOffset { get; set; } = 16384;
+    public int MaxOffset { get; set; } = 4096;
     public int MaxResults { get; set; } = 5000;
     public bool UseResultLimit { get; set; } = false;
     public int ThreadCount { get; set; } = Math.Max(1, Environment.ProcessorCount / 2);
@@ -157,7 +157,7 @@ public sealed class PointerScanOptions
     public bool IncludePrivate { get; set; } = true;
     public bool IncludeMapped { get; set; } = true;
     public bool IncludeModuleImage { get; set; } = true;
-    public bool RequireStaticRoot { get; set; } = false;
+    public bool RequireStaticRoot { get; set; } = true;
     public bool ExcludeReadOnlyNodes { get; set; } = false;
     public bool NoLoopingPointers { get; set; } = true;
     public bool StopTraversingAfterStaticRoot { get; set; } = false;
@@ -230,6 +230,7 @@ public sealed class ModuleRange
 
     public bool Contains(ulong address) => address >= Base && address < End;
 }
+
 
 
 

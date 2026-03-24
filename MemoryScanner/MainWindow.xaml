@@ -139,7 +139,6 @@
                             <DataGridTextColumn x:Name="WatchTypeColumn" Header="Type" Binding="{Binding DataType}" Width="*" IsReadOnly="True"/>
                             <DataGridTextColumn x:Name="WatchValueColumn" Header="Value" Binding="{Binding LastValueText}" Width="*" IsReadOnly="True"/>
                             <DataGridCheckBoxColumn Header="Freeze" Binding="{Binding IsFrozen, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" Width="*"/>
-                            <DataGridTextColumn Header="Status" Binding="{Binding Status}" Width="*" IsReadOnly="True"/>
                         </DataGrid.Columns>
                     </DataGrid>
 
@@ -161,9 +160,7 @@
                     <Grid.RowDefinitions>
                         <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="*"/>
-                        <RowDefinition Height="Auto"/>
                         <RowDefinition Height="Auto"/>
                     </Grid.RowDefinitions>
 
@@ -212,20 +209,11 @@
                         <Button Grid.Column="4" x:Name="ScanOptionsButton" Content="Scan Options" Width="110" Height="30" Margin="0,18,0,0" Click="ScanOptions_OnClick"/>
                     </Grid>
 
-                    <Grid Grid.Row="2" Margin="0,0,0,8">
-                        <Grid.ColumnDefinitions>
-                            <ColumnDefinition Width="*"/>
-                            <ColumnDefinition Width="Auto"/>
-                        </Grid.ColumnDefinitions>
-
-                        <ProgressBar x:Name="ScanProgressBar" Grid.Column="0" Height="20" Minimum="0" Maximum="100" Value="0"/>
-                        <TextBlock x:Name="ScanProgressText" Grid.Column="1" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#FFE6E6E6" Text="Idle"/>
-                    </Grid>
-
                     <DataGrid x:Name="ScanResultGrid"
-                              Grid.Row="3"
+                              Grid.Row="2"
                               AutoGenerateColumns="False"
                               SelectionMode="Extended"
+                              SelectionUnit="FullRow"
                               CanUserAddRows="False"
                               IsReadOnly="True"
                               EnableRowVirtualization="True"
@@ -239,7 +227,9 @@
                               AlternatingRowBackground="#FF292929"
                               BorderThickness="0"
                               ScrollViewer.ScrollChanged="ScanResultGrid_OnScrollChanged"
-                              MouseDoubleClick="ScanResultGrid_OnMouseDoubleClick">
+                              MouseDoubleClick="ScanResultGrid_OnMouseDoubleClick"
+                              SelectionChanged="ScanResultGrid_OnSelectionChanged"
+                              PreviewMouseLeftButtonDown="ScanResultGrid_OnPreviewMouseLeftButtonDown">
                         <DataGrid.ColumnHeaderStyle>
                             <Style TargetType="DataGridColumnHeader">
                                 <Setter Property="Foreground" Value="Black"/>
@@ -270,38 +260,37 @@
                         </DataGrid.Columns>
                     </DataGrid>
 
-                    <Grid Grid.Row="4" Margin="0,8,0,0">
+                    <Grid Grid.Row="3" Margin="0,8,0,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
 
                         <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left" VerticalAlignment="Center">
-                            <TextBlock Text="Page Size:" Foreground="#FFE6E6E6" VerticalAlignment="Center" Margin="0,0,6,0"/>
-                            <ComboBox x:Name="PageSizeBox" Width="120" Margin="0,0,10,0" SelectionChanged="PageSizeBox_OnSelectionChanged"/>
-                            <TextBlock x:Name="ShowingInfoText" Foreground="#FFE6E6E6" VerticalAlignment="Center" Text="Showing 0 of 0"/>
+                            <ProgressBar x:Name="ScanProgressBar" Width="260" Height="20" Minimum="0" Maximum="100" Value="0"/>
+                            <TextBlock x:Name="ScanProgressText" Margin="8,0,0,0" VerticalAlignment="Center" Foreground="#FFE6E6E6" Text="Idle"/>
                         </StackPanel>
 
                         <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right" VerticalAlignment="Center">
-                            <Button x:Name="PrevPageButton" Width="38" Height="30" Margin="0,0,8,0" Click="PrevPage_OnClick" ToolTip="Previous Page">
-                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72B;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Button>
-                            <TextBlock x:Name="PageInfoText" Foreground="#FFE6E6E6" VerticalAlignment="Center" Margin="0,0,8,0" Text="0/1"/>
-                            <Button x:Name="NextPageButton" Width="38" Height="30" Click="NextPage_OnClick" ToolTip="Next Page">
-                                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-                            </Button>
+                            <Button x:Name="TakeSelectedScanResultButton" Content="Take Selected" Width="120" Height="30" Margin="0,0,8,0" Click="TakeSelectedScanResult_OnClick"/>
+                            <Button Content="Take All" Width="100" Height="30" Click="TakeAllScanResults_OnClick"/>
                         </StackPanel>
                     </Grid>
-
-                    <StackPanel Grid.Row="5" Orientation="Horizontal" HorizontalAlignment="Right" Margin="0,8,0,0">
-                        <Button Content="Take Selected" Width="120" Height="30" Margin="0,0,8,0" Click="TakeSelectedScanResult_OnClick"/>
-                        <Button Content="Take All" Width="100" Height="30" Click="TakeAllScanResults_OnClick"/>
-                    </StackPanel>
                 </Grid>
             </Border>
         </Grid>
     </Grid>
 </Window>
+
+
+
+
+
+
+
+
+
+
 
 
 

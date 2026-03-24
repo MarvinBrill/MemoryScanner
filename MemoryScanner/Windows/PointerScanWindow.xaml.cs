@@ -13,7 +13,7 @@ using System.Runtime.InteropServices;
 using System.Text.Json;
 using System.Windows;
 using System.Windows.Controls;
-using System.Windows.Data;
+using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
 
@@ -21,17 +21,9 @@ namespace MemoryScanner.Windows;
 
 public partial class PointerScanWindow : Window
 {
+    private const string UnavailableValueText = "???";
     private const int MinPointerRefreshBatchSize = 32;
     private const int MaxPointerRefreshBatchSize = 512;
-
-    private enum ValueFilterCondition
-    {
-        Equal,
-        NotEqual,
-        Greater,
-        Less,
-        Between
-    }
     private readonly PointerScanService _pointerScanService;
     private readonly IMemoryAccessor _memoryAccessor;
     private readonly PointerDisplayContext _displayContext;
@@ -44,11 +36,6 @@ public partial class PointerScanWindow : Window
     private PointerScanOptions _runtimeOptions = new();
     private PointerSessionSaveOptions _saveOptions = new();
     private string? _currentSessionFilePath;
-    private readonly ICollectionView _rowsView;
-    private bool _isValueFilterActive;
-    private ValueFilterCondition _valueFilterCondition = ValueFilterCondition.Equal;
-    private object? _valueFilterPrimary;
-    private object? _valueFilterSecondary;
     private int _pointerRefreshCursor;
     private bool _cancelRequestedByUser;
     private DateTime _mergePhaseStartedUtc = DateTime.MinValue;
@@ -58,6 +45,7 @@ public partial class PointerScanWindow : Window
 
     public List<PointerPath> SelectedPaths { get; private set; } = new();
     public MemoryDataType SelectedValueDataType => _selectedValueDataType;
+    public event Action<PointerScanWindow, IReadOnlyList<PointerPath>, MemoryDataType>? TakeSelectedRequested;
 
     public PointerScanWindow(
         PointerScanService pointerScanService,
@@ -74,17 +62,12 @@ public partial class PointerScanWindow : Window
         _runtimeOptions = CloneOptions(initialOptions) ?? new PointerScanOptions();
 
         InitializeComponent();
-        _rowsView = CollectionViewSource.GetDefaultView(Rows);
-        _rowsView.Filter = FilterPointerRow;
-        ResultGrid.ItemsSource = _rowsView;
+        ResultGrid.ItemsSource = Rows;
 
         TargetAddressText.Text = $"0x{_targetAddress:X}";
         ValueDataTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
         ValueDataTypeBox.SelectedItem = _selectedValueDataType;
 
-        ValueFilterConditionBox.ItemsSource = Enum.GetValues<ValueFilterCondition>();
-        ValueFilterConditionBox.SelectedItem = ValueFilterCondition.Equal;
-        UpdateValueFilterInputVisibility();
 
         _valueRefreshTimer = new DispatcherTimer();
         _valueRefreshTimer.Tick += ValueRefreshTimer_OnTick;
@@ -260,12 +243,6 @@ public partial class PointerScanWindow : Window
             return;
         }
 
-        if (!TryParseAddress(TargetAddressText.Text, out var newTargetAddress))
-        {
-            MessageBox.Show(this, "Invalid target address.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
-            return;
-        }
-
         var sourcePaths = Rows.Select(r => r.Path).ToList();
         if (sourcePaths.Count == 0)
         {
@@ -273,7 +250,25 @@ public partial class PointerScanWindow : Window
             return;
         }
 
-        _targetAddress = newTargetAddress;
+        var dialogAddress = _targetAddress;
+        if (TryParseAddress(TargetAddressText.Text, out var parsedTargetAddress))
+        {
+            dialogAddress = parsedTargetAddress;
+        }
+
+        var dialog = new PointerRescanWindow(dialogAddress, _selectedValueDataType) { Owner = this };
+        if (dialog.ShowDialog() != true || dialog.Request is null)
+        {
+            return;
+        }
+
+        var request = dialog.Request;
+        if (request.Mode == PointerRescanMode.Address)
+        {
+            _targetAddress = request.Address;
+            TargetAddressText.Text = $"0x{_targetAddress:X}";
+        }
+
         _scanCts?.Cancel();
         _scanCts?.Dispose();
         _scanCts = new CancellationTokenSource();
@@ -288,7 +283,7 @@ public partial class PointerScanWindow : Window
 
         try
         {
-            var rescanned = await Task.Run(() => RescanPointerPaths(sourcePaths, newTargetAddress, progress, _scanCts.Token));
+            var rescanned = await Task.Run(() => RescanPointerPaths(sourcePaths, request, progress, _scanCts.Token));
             var rows = new List<PointerPathRow>(rescanned.Count);
             foreach (var path in rescanned)
             {
@@ -338,6 +333,7 @@ public partial class PointerScanWindow : Window
             }
         }
     }
+
     private void PointerOptions_OnClick(object sender, RoutedEventArgs e)
     {
         if (_isScanRunning)
@@ -399,154 +395,14 @@ public partial class PointerScanWindow : Window
             var warmupBatch = ComputeRefreshBatchSize(Rows.Count, MinPointerRefreshBatchSize, MaxPointerRefreshBatchSize);
             RefreshPointerValuesCore(Math.Min(Rows.Count, warmupBatch));
         }
-
-        if (_isValueFilterActive)
-        {
-            if (!TryApplyValueFilter(showInputError: false))
-            {
-                _isValueFilterActive = false;
-                _valueFilterPrimary = null;
-                _valueFilterSecondary = null;
-            }
-
-            _rowsView.Refresh();
-        }
-
         UpdateOptionsText();
     }
-    private void ValueFilterConditionBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
-    {
-        if (ValueFilterConditionBox.SelectedItem is ValueFilterCondition condition)
-        {
-            _valueFilterCondition = condition;
-        }
 
-        UpdateValueFilterInputVisibility();
-    }
-
-    private void ApplyValueFilter_OnClick(object sender, RoutedEventArgs e)
-    {
-        if (!TryApplyValueFilter(showInputError: true))
-        {
-            return;
-        }
-
-        _rowsView.Refresh();
-    }
-
-    private void ClearValueFilter_OnClick(object sender, RoutedEventArgs e)
-    {
-        _isValueFilterActive = false;
-        _valueFilterPrimary = null;
-        _valueFilterSecondary = null;
-        ValueFilterInputText.Text = string.Empty;
-        ValueFilterInputToText.Text = string.Empty;
-        _rowsView.Refresh();
-    }
-
-    private bool TryApplyValueFilter(bool showInputError)
-    {
-        if (!TryParseFilterInput(ValueFilterInputText.Text, out var primaryValue))
-        {
-            if (showInputError)
-            {
-                MessageBox.Show(this, "Invalid filter value for current data type.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
-            }
-
-            return false;
-        }
-
-        _valueFilterPrimary = primaryValue;
-        _valueFilterSecondary = null;
-
-        if (_valueFilterCondition == ValueFilterCondition.Between)
-        {
-            if (!TryParseFilterInput(ValueFilterInputToText.Text, out var secondaryValue))
-            {
-                if (showInputError)
-                {
-                    MessageBox.Show(this, "Invalid range end value for current data type.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
-                }
-
-                return false;
-            }
-
-            _valueFilterSecondary = secondaryValue;
-        }
-
-        _isValueFilterActive = true;
-        return true;
-    }
-
-    private bool TryParseFilterInput(string? input, out object value)
-    {
-        value = 0;
-        var text = input?.Trim() ?? string.Empty;
-        return ScanService.TryParseValue(_selectedValueDataType, text, out value);
-    }
-
-    private void UpdateValueFilterInputVisibility()
-    {
-        var isBetween = _valueFilterCondition == ValueFilterCondition.Between;
-        ValueFilterToLabel.Visibility = isBetween ? Visibility.Visible : Visibility.Collapsed;
-        ValueFilterInputToText.Visibility = isBetween ? Visibility.Visible : Visibility.Collapsed;
-    }
-
-    private bool FilterPointerRow(object item)
-    {
-        if (!_isValueFilterActive)
-        {
-            return true;
-        }
-
-        if (item is not PointerPathRow row || !row.TryGetResolvedValue(out var currentValue))
-        {
-            return false;
-        }
-
-        var primary = _valueFilterPrimary;
-        if (primary is null)
-        {
-            return true;
-        }
-
-        return _valueFilterCondition switch
-        {
-            ValueFilterCondition.Equal => TryCompareValuesByType(currentValue, primary, out var eqCmp) && eqCmp == 0,
-            ValueFilterCondition.NotEqual => TryCompareValuesByType(currentValue, primary, out var neCmp) && neCmp != 0,
-            ValueFilterCondition.Greater => TryCompareValuesByType(currentValue, primary, out var gtCmp) && gtCmp > 0,
-            ValueFilterCondition.Less => TryCompareValuesByType(currentValue, primary, out var ltCmp) && ltCmp < 0,
-            ValueFilterCondition.Between => IsBetween(currentValue, primary, _valueFilterSecondary),
-            _ => true
-        };
-    }
-
-    private bool IsBetween(object currentValue, object boundaryA, object? boundaryB)
-    {
-        if (boundaryB is null)
-        {
-            return false;
-        }
-
-        if (!TryCompareValuesByType(boundaryA, boundaryB, out var order))
-        {
-            return false;
-        }
-
-        object low = order <= 0 ? boundaryA : boundaryB;
-        object high = order <= 0 ? boundaryB : boundaryA;
-
-        return TryCompareValuesByType(currentValue, low, out var lowCmp)
-            && TryCompareValuesByType(currentValue, high, out var highCmp)
-            && lowCmp >= 0
-            && highCmp <= 0;
-    }
-
-    private bool TryCompareValuesByType(object left, object right, out int result)
+    private static bool TryCompareValuesByType(MemoryDataType dataType, object left, object right, out int result)
     {
         result = 0;
 
-        switch (_selectedValueDataType)
+        switch (dataType)
         {
             case MemoryDataType.Byte:
                 if (!TryCoerce(left, out byte leftByte) || !TryCoerce(right, out byte rightByte))
@@ -746,6 +602,24 @@ public partial class PointerScanWindow : Window
         RefreshVisiblePointerRows();
     }
 
+    private void ResultGrid_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
+    {
+        if (_isScanRunning || e.ChangedButton != MouseButton.Left)
+        {
+            return;
+        }
+
+        var source = e.OriginalSource as DependencyObject;
+        var row = FindAncestor<DataGridRow>(source);
+        if (row?.Item is not PointerPathRow pointerRow)
+        {
+            return;
+        }
+
+        var path = ClonePath(pointerRow.Path);
+        SelectedPaths = new List<PointerPath> { path };
+        TakeSelectedRequested?.Invoke(this, SelectedPaths, _selectedValueDataType);
+    }
     private void OnGlobalValueRefreshIntervalChanged(object? sender, int milliseconds)
     {
         Dispatcher.Invoke(() =>
@@ -920,9 +794,6 @@ public partial class PointerScanWindow : Window
             _selectedValueDataType = session.ValueDataType;
             ValueDataTypeBox.SelectedItem = _selectedValueDataType;
 
-            ValueFilterConditionBox.ItemsSource = Enum.GetValues<ValueFilterCondition>();
-            ValueFilterConditionBox.SelectedItem = ValueFilterCondition.Equal;
-            UpdateValueFilterInputVisibility();
 
             Rows.ReplaceAll(Array.Empty<PointerPathRow>());
             _pointerRefreshCursor = 0;
@@ -1018,7 +889,7 @@ public partial class PointerScanWindow : Window
 
     private void TakeSelected_OnClick(object sender, RoutedEventArgs e)
     {
-        var paths = ResultGrid.SelectedItems.OfType<PointerPathRow>().Select(x => x.Path).ToList();
+        var paths = ResultGrid.SelectedItems.OfType<PointerPathRow>().Select(x => ClonePath(x.Path)).ToList();
         if (paths.Count == 0)
         {
             MessageBox.Show(this, "No pointer selected.", "Information", MessageBoxButton.OK, MessageBoxImage.Information);
@@ -1026,7 +897,7 @@ public partial class PointerScanWindow : Window
         }
 
         SelectedPaths = paths;
-        DialogResult = true;
+        TakeSelectedRequested?.Invoke(this, paths, _selectedValueDataType);
     }
 
     private bool TryBuildOptions(out PointerScanOptions options, out ulong targetAddress)
@@ -1176,12 +1047,24 @@ public partial class PointerScanWindow : Window
 
     private void RefreshPointerValues()
     {
+        if (!_memoryAccessor.IsAttached)
+        {
+            SetPointerValuesUnavailableIncremental();
+            return;
+        }
+
         _pointerRefreshCursor = 0;
         RefreshPointerValuesCore(Rows.Count);
     }
 
     private void RefreshPointerValuesIncremental()
     {
+        if (!_memoryAccessor.IsAttached)
+        {
+            SetPointerValuesUnavailableIncremental();
+            return;
+        }
+
         var count = Rows.Count;
         if (count == 0)
         {
@@ -1223,10 +1106,6 @@ public partial class PointerScanWindow : Window
             updated++;
         }
 
-        if (_isValueFilterActive)
-        {
-            _rowsView.Refresh();
-        }
     }
 
     private void RefreshPointerValuesCore(int maxUpdates)
@@ -1250,14 +1129,16 @@ public partial class PointerScanWindow : Window
             UpdatePointerRowValue(row);
         }
 
-        if (_isValueFilterActive)
-        {
-            _rowsView.Refresh();
-        }
     }
 
     private void RefreshValuesAfterBulkLoad()
     {
+        if (!_memoryAccessor.IsAttached)
+        {
+            SetPointerValuesUnavailableIncremental();
+            return;
+        }
+
         _pointerRefreshCursor = 0;
         const int fullRefreshThreshold = 5000;
         if (Rows.Count <= fullRefreshThreshold)
@@ -1271,6 +1152,13 @@ public partial class PointerScanWindow : Window
 
     private void UpdatePointerRowValue(PointerPathRow row)
     {
+        if (!_memoryAccessor.IsAttached)
+        {
+            row.ValueText = UnavailableValueText;
+            row.ClearResolvedValue();
+            return;
+        }
+
         if (TryResolvePointerValue(row.Path, out var rawValue, out var valueText, out var currentAddressText))
         {
             row.ValueText = valueText;
@@ -1302,9 +1190,51 @@ public partial class PointerScanWindow : Window
             UpdatePointerRowValue(row);
         }
 
-        if (_isValueFilterActive)
+    }
+
+    private void SetPointerValuesUnavailableIncremental()
+    {
+        var count = Rows.Count;
+        if (count == 0)
         {
-            _rowsView.Refresh();
+            return;
+        }
+
+        var visibleRows = GetVisibleDataGridItems<PointerPathRow>(ResultGrid);
+        var visibleSet = visibleRows.Count > 0 ? new HashSet<PointerPathRow>(visibleRows) : null;
+        foreach (var row in visibleRows)
+        {
+            row.ValueText = UnavailableValueText;
+            row.ClearResolvedValue();
+        }
+
+        if (_pointerRefreshCursor >= count)
+        {
+            _pointerRefreshCursor = 0;
+        }
+
+        var backgroundBudget = Math.Min(count, ComputeRefreshBatchSize(count, MinPointerRefreshBatchSize, MaxPointerRefreshBatchSize));
+        var updated = 0;
+        var attempts = 0;
+        while (updated < backgroundBudget && attempts < count)
+        {
+            if (_pointerRefreshCursor >= count)
+            {
+                _pointerRefreshCursor = 0;
+            }
+
+            var row = Rows[_pointerRefreshCursor];
+            _pointerRefreshCursor++;
+            attempts++;
+
+            if (visibleSet is not null && visibleSet.Contains(row))
+            {
+                continue;
+            }
+
+            row.ValueText = UnavailableValueText;
+            row.ClearResolvedValue();
+            updated++;
         }
     }
 
@@ -1352,6 +1282,21 @@ public partial class PointerScanWindow : Window
         return deduplicated;
     }
 
+    private static T? FindAncestor<T>(DependencyObject? child) where T : DependencyObject
+    {
+        var current = child;
+        while (current is not null)
+        {
+            if (current is T match)
+            {
+                return match;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
     private static IEnumerable<T> FindVisualChildren<T>(DependencyObject? parent) where T : DependencyObject
     {
         if (parent is null)
@@ -1376,13 +1321,14 @@ public partial class PointerScanWindow : Window
     }
     private List<PointerPath> RescanPointerPaths(
         IReadOnlyList<PointerPath> sourcePaths,
-        ulong newTargetAddress,
+        PointerRescanRequest request,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken)
     {
         var kept = new List<PointerPath>(sourcePaths.Count);
         var total = Math.Max(1, sourcePaths.Count);
-        progress?.Report(new ScanProgressInfo { Processed = 0, Total = total, StatusText = "Rescanning pointers" });
+        var modeText = request.Mode == PointerRescanMode.Address ? "address" : "value";
+        progress?.Report(new ScanProgressInfo { Processed = 0, Total = total, StatusText = $"Rescanning pointers ({modeText})" });
 
         for (var i = 0; i < sourcePaths.Count; i++)
         {
@@ -1392,7 +1338,20 @@ public partial class PointerScanWindow : Window
             }
 
             var path = sourcePaths[i];
-            if (TryResolvePointerFinalAddress(path, out var resolvedAddress) && resolvedAddress == newTargetAddress)
+            var keep = false;
+
+            if (request.Mode == PointerRescanMode.Address)
+            {
+                keep = TryResolvePointerFinalAddress(path, out var resolvedAddress) && resolvedAddress == request.Address;
+            }
+            else if (request.Value is not null
+                && TryResolvePointerValue(path, request.ValueDataType, out var rawValue, out _, out _)
+                && TryCompareValuesByType(request.ValueDataType, rawValue, request.Value, out var comparison))
+            {
+                keep = comparison == 0;
+            }
+
+            if (keep)
             {
                 kept.Add(ClonePath(path));
             }
@@ -1403,7 +1362,7 @@ public partial class PointerScanWindow : Window
                 {
                     Processed = i + 1,
                     Total = total,
-                    StatusText = "Rescanning pointers"
+                    StatusText = $"Rescanning pointers ({modeText})"
                 });
             }
         }
@@ -1436,6 +1395,11 @@ public partial class PointerScanWindow : Window
     }
     private bool TryResolvePointerValue(PointerPath path, out object rawValue, out string valueText, out string currentAddressText)
     {
+        return TryResolvePointerValue(path, _selectedValueDataType, out rawValue, out valueText, out currentAddressText);
+    }
+
+    private bool TryResolvePointerValue(PointerPath path, MemoryDataType dataType, out object rawValue, out string valueText, out string currentAddressText)
+    {
         rawValue = 0;
         valueText = "<invalid>";
         currentAddressText = "<unresolved>";
@@ -1446,7 +1410,7 @@ public partial class PointerScanWindow : Window
             PointerBaseAddress = path.BaseAddress,
             PointerBaseModuleName = path.BaseModuleName,
             PointerBaseModuleOffset = path.BaseModuleOffset,
-            DataType = _selectedValueDataType,
+            DataType = dataType,
             Offsets = new ObservableCollection<int>(path.Offsets),
             PointerSizeBytes = path.PointerSizeBytes
         };
@@ -1458,7 +1422,7 @@ public partial class PointerScanWindow : Window
 
         currentAddressText = _displayContext.FormatAddress(finalAddress);
 
-        if (!_memoryAccessor.TryReadValue(finalAddress, _selectedValueDataType, out var value))
+        if (!_memoryAccessor.TryReadValue(finalAddress, dataType, out var value))
         {
             return false;
         }
@@ -1539,7 +1503,6 @@ public partial class PointerScanWindow : Window
         StartScanButton.IsEnabled = false;
         RescanButton.IsEnabled = false;
         PointerOptionsButton.IsEnabled = false;
-        SaveOptionsButton.IsEnabled = false;
         CancelScanButton.IsEnabled = true;
 
         ResetMergePhaseEstimate();
@@ -1558,7 +1521,6 @@ public partial class PointerScanWindow : Window
         StartScanButton.IsEnabled = true;
         RescanButton.IsEnabled = true;
         PointerOptionsButton.IsEnabled = true;
-        SaveOptionsButton.IsEnabled = true;
         CancelScanButton.IsEnabled = false;
 
         ResetMergePhaseEstimate();
@@ -1590,27 +1552,7 @@ public partial class PointerScanWindow : Window
     private void UpdateOptionsText()
     {
         var updateMs = UiUpdateRoutineSettings.ValueRefreshIntervalMs;
-        var limitText = _runtimeOptions.UseResultLimit ? _runtimeOptions.MaxResults.ToString(CultureInfo.InvariantCulture) : "off";
-        var processBaseOnlyText = _runtimeOptions.RequireStaticRoot ? "on" : "off";
-        var readOnlyText = _runtimeOptions.ExcludeReadOnlyNodes ? "on" : "off";
-        var loopText = _runtimeOptions.NoLoopingPointers ? "on" : "off";
-        var stopStaticText = _runtimeOptions.StopTraversingAfterStaticRoot ? "on" : "off";
-        var dedupeText = _runtimeOptions.AggressiveNodeDeduplication ? "on" : "off";
-        var negativeOffsetsText = _runtimeOptions.AllowNegativeOffsets ? "on" : "off";
-        var widthText = _runtimeOptions.PointerWidthMode switch
-        {
-            PointerValueWidthMode.Force32Bit => "32-bit",
-            PointerValueWidthMode.Force64Bit => "64-bit",
-            _ => "auto"
-        };
-
-        var rangeText = _runtimeOptions.UseAddressRange
-            ? $"0x{_runtimeOptions.AddressRangeFrom:X}-0x{_runtimeOptions.AddressRangeTo:X}"
-            : "off";
-        var rootInRangeText = _runtimeOptions.RequireRootInAddressRange ? "on" : "off";
-        var allNodesInRangeText = _runtimeOptions.RequireAllNodesInAddressRange ? "on" : "off";
-        var trimOnCancelText = _runtimeOptions.TrimMemoryAfterCancel ? "on" : "off";
-        PointerOptionsText.Text = $"Options: Type {_selectedValueDataType}, Threads {_runtimeOptions.ThreadCount}, Limit {limitText}, Width {widthText}, Range {rangeText}, RootInRange {rootInRangeText}, AllNodesInRange {allNodesInRangeText}, Process+Base only {processBaseOnlyText}, RO nodes off {readOnlyText}, No loops {loopText}, Stop@static {stopStaticText}, Dedupe {dedupeText}, NegOff {negativeOffsetsText}, Preset d{_runtimeOptions.MaxDepth}/off{_runtimeOptions.MaxOffset}/a{_runtimeOptions.Alignment}, Update {updateMs} ms, TrimOnCancel {trimOnCancelText}";
+        PointerOptionsText.Text = $"Update {updateMs} ms";
     }
 
     private void UpdateWindowTitle()
@@ -1862,6 +1804,19 @@ public partial class PointerScanWindow : Window
         public List<PointerPath> Results { get; set; } = new();
     }
 }
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
