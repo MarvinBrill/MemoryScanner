@@ -171,6 +171,7 @@
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="*"/>
                             <ColumnDefinition Width="Auto"/>
                             <ColumnDefinition Width="Auto"/>
                         </Grid.ColumnDefinitions>
@@ -182,15 +183,20 @@
 
                         <StackPanel Grid.Column="1" Margin="0,0,8,0">
                             <TextBlock Text="Condition" Foreground="#FFE6E6E6"/>
-                            <ComboBox x:Name="ScanComparisonBox" Margin="0,4,0,0" Height="28"/>
+                            <ComboBox x:Name="ScanComparisonBox" Margin="0,4,0,0" Height="28" SelectionChanged="ScanComparisonBox_OnSelectionChanged"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="2">
-                            <TextBlock Text="Value" Foreground="#FFE6E6E6"/>
+                        <StackPanel Grid.Column="2" Margin="0,0,8,0">
+                            <TextBlock x:Name="ScanValueLabelText" Text="Value" Foreground="#FFE6E6E6"/>
                             <TextBox x:Name="ScanValueText" Margin="0,4,0,0" Height="28" VerticalContentAlignment="Center"/>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,18,8,0" x:Name="ScanButtonsPanel">
+                        <StackPanel x:Name="ScanRangeToPanel" Grid.Column="3" Margin="0,0,8,0" Visibility="Collapsed">
+                            <TextBlock Text="Range To" Foreground="#FFE6E6E6"/>
+                            <TextBox x:Name="ScanValueToText" Margin="0,4,0,0" Height="28" VerticalContentAlignment="Center"/>
+                        </StackPanel>
+
+                        <StackPanel Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,18,8,0" x:Name="ScanButtonsPanel">
                             <Button x:Name="FirstScanButton" Width="42" Height="30" Margin="0,0,8,0" Click="FirstScan_OnClick" ToolTip="First Scan">
                                 <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="16" Text="&#xE768;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Button>
@@ -202,11 +208,11 @@
                             </Button>
                         </StackPanel>
 
-                        <StackPanel Grid.Column="3" Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,18,8,0" x:Name="CancelScanPanel" Visibility="Collapsed">
+                        <StackPanel Grid.Column="4" Orientation="Horizontal" HorizontalAlignment="Left" Margin="8,18,8,0" x:Name="CancelScanPanel" Visibility="Collapsed">
                             <Button x:Name="CancelScanButton" Content="Cancel Scan" Width="120" Height="30" Click="CancelScan_OnClick"/>
                         </StackPanel>
 
-                        <Button Grid.Column="4" x:Name="ScanOptionsButton" Content="Scan Options" Width="110" Height="30" Margin="0,18,0,0" Click="ScanOptions_OnClick"/>
+                        <Button Grid.Column="5" x:Name="ScanOptionsButton" Content="Scan Options" Width="110" Height="30" Margin="0,18,0,0" Click="ScanOptions_OnClick"/>
                     </Grid>
 
                     <DataGrid x:Name="ScanResultGrid"

@@ -47,6 +47,8 @@ public partial class MainWindow : Window
     private bool _watchInvalidStateApplied;
     private Point _watchDragStartPoint;
     private WatchEntry? _watchDragSourceEntry;
+    private static readonly IReadOnlyList<ScanComparisonOption> _scanComparisonsInitial = BuildScanComparisonOptions(includeUnknownInitial: true);
+    private static readonly IReadOnlyList<ScanComparisonOption> _scanComparisonsAfterFirst = BuildScanComparisonOptions(includeUnknownInitial: false);
 
     public MainWindow()
     {
@@ -64,8 +66,7 @@ public partial class MainWindow : Window
         ScanTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
         ScanTypeBox.SelectedItem = MemoryDataType.Int32;
 
-        ScanComparisonBox.ItemsSource = Enum.GetValues<ScanComparison>();
-        ScanComparisonBox.SelectedItem = ScanComparison.Equal;
+        UpdateScanComparisonChoices();
 
         _refreshTimer = new DispatcherTimer();
         _refreshTimer.Tick += RefreshTimer_OnTick;
@@ -98,6 +99,7 @@ public partial class MainWindow : Window
         ProcessInfoText.Text = $"Attached: {_memoryAccessor.Process.ProcessName} (PID {_memoryAccessor.Process.Id})";
         _scanService.Reset();
         _hasCompletedFirstScan = false;
+        UpdateScanComparisonChoices();
         _allScanResults.Clear();
         _scanResults.Clear();
         _scanResultRefreshCursor = 0;
@@ -456,6 +458,7 @@ public partial class MainWindow : Window
 
         _scanService.Reset();
         _hasCompletedFirstScan = false;
+        UpdateScanComparisonChoices();
         _allScanResults.Clear();
         _scanResults.Clear();
         _scanResultRefreshCursor = 0;
@@ -744,6 +747,98 @@ public partial class MainWindow : Window
         }
     }
 
+    private void ScanComparisonBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateScanComparisonInputUi();
+    }
+
+    private static IReadOnlyList<ScanComparisonOption> BuildScanComparisonOptions(bool includeUnknownInitial)
+    {
+        var values = Enum.GetValues<ScanComparison>();
+        var list = new List<ScanComparisonOption>(values.Length);
+        foreach (var value in values)
+        {
+            if (!includeUnknownInitial && value == ScanComparison.UnknownInitial)
+            {
+                continue;
+            }
+
+            list.Add(new ScanComparisonOption(value, FormatScanComparisonLabel(value)));
+        }
+
+        return list;
+    }
+
+    private static string FormatScanComparisonLabel(ScanComparison comparison)
+    {
+        return comparison switch
+        {
+            ScanComparison.UnknownInitial => "Unknown Initial",
+            ScanComparison.NotEqual => "Not Equal",
+            ScanComparison.Between => "Between (Range)",
+            _ => comparison.ToString()
+        };
+    }
+
+    private void UpdateScanComparisonChoices()
+    {
+        if (ScanComparisonBox is null)
+        {
+            return;
+        }
+
+        var previous = (ScanComparisonBox.SelectedItem as ScanComparisonOption)?.Value;
+        var options = _hasCompletedFirstScan ? _scanComparisonsAfterFirst : _scanComparisonsInitial;
+
+        ScanComparisonBox.ItemsSource = options;
+
+        if (_hasCompletedFirstScan && previous == ScanComparison.UnknownInitial)
+        {
+            previous = ScanComparison.Changed;
+        }
+
+        var selected = previous.HasValue
+            ? options.FirstOrDefault(x => x.Value == previous.Value)
+            : null;
+
+        if (selected is null)
+        {
+            selected = options.FirstOrDefault(x => x.Value == ScanComparison.Equal)
+                ?? options.First();
+        }
+
+        ScanComparisonBox.SelectedItem = selected;
+        UpdateScanComparisonInputUi();
+    }
+
+    private void UpdateScanComparisonInputUi()
+    {
+        if (ScanComparisonBox.SelectedItem is not ScanComparisonOption option)
+        {
+            ScanValueLabelText.Text = "Value";
+            ScanValueText.IsEnabled = true;
+            ScanRangeToPanel.Visibility = Visibility.Collapsed;
+            return;
+        }
+
+        var comparison = option.Value;
+        var requiresInput = comparison is ScanComparison.Equal
+            or ScanComparison.NotEqual
+            or ScanComparison.Greater
+            or ScanComparison.Less
+            or ScanComparison.Between;
+
+        var showRange = comparison == ScanComparison.Between;
+
+        ScanValueLabelText.Text = showRange ? "Range From" : "Value";
+        ScanValueText.IsEnabled = requiresInput;
+        ScanRangeToPanel.Visibility = showRange ? Visibility.Visible : Visibility.Collapsed;
+
+        if (!showRange)
+        {
+            ScanValueToText.Text = string.Empty;
+        }
+    }
     private async Task RunScanAsync(bool isFirstScan)
     {
         if (_isScanRunning)
@@ -756,8 +851,14 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (!TryGetScanInput(out var dataType, out var comparison, out var valueText))
+        if (!TryGetScanInput(out var dataType, out var comparison, out var valueText, out var valueTextTo))
         {
+            return;
+        }
+
+        if (!isFirstScan && comparison == ScanComparison.UnknownInitial)
+        {
+            MessageBox.Show(this, "Unknown Initial can only be used as first scan.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             return;
         }
 
@@ -793,16 +894,24 @@ public partial class MainWindow : Window
         {
             var token = _scanCts.Token;
             IReadOnlyList<ScanResult> results = isFirstScan
-                ? await Task.Run(() => _scanService.FirstScan(dataType, comparison, valueText, _scanOptions, progress, token), token)
-                : await Task.Run(() => _scanService.NextScan(dataType, comparison, valueText, _scanOptions, progress, token), token);
+                ? await Task.Run(() => _scanService.FirstScan(dataType, comparison, valueText, valueTextTo, _scanOptions, progress, token), token)
+                : await Task.Run(() => _scanService.NextScan(dataType, comparison, valueText, valueTextTo, _scanOptions, progress, token), token);
 
             SetScanResults(results);
             if (isFirstScan && !token.IsCancellationRequested)
             {
                 _hasCompletedFirstScan = true;
+                UpdateScanComparisonChoices();
             }
             ScanProgressBar.Value = 100;
-            ScanProgressText.Text = $"Scan finished ({results.Count} results)";
+            if (isFirstScan && comparison == ScanComparison.UnknownInitial)
+            {
+                ScanProgressText.Text = $"Unknown initial baseline captured ({_scanService.CandidateCount} candidates)";
+            }
+            else
+            {
+                ScanProgressText.Text = $"Scan finished ({results.Count} results)";
+            }
         }
         catch (OperationCanceledException)
         {
@@ -879,7 +988,7 @@ public partial class MainWindow : Window
     private void UpdateIdleProgressText()
     {
         var updateMsText = UiUpdateRoutineSettings.ValueRefreshIntervalMs;
-        ScanProgressText.Text = $"Idle | Update {updateMsText} ms";
+        ScanProgressText.Text = $"Idle | Update {updateMsText} ms | Results {_allScanResults.Count}";
     }
 
     private void ScanResultGrid_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
@@ -1726,11 +1835,12 @@ public partial class MainWindow : Window
         entry.PointerBaseAddress = moduleByName.Base + entry.PointerBaseModuleOffset;
     }
 
-    private bool TryGetScanInput(out MemoryDataType dataType, out ScanComparison comparison, out string valueText)
+    private bool TryGetScanInput(out MemoryDataType dataType, out ScanComparison comparison, out string valueText, out string valueTextTo)
     {
         dataType = MemoryDataType.Int32;
         comparison = ScanComparison.Equal;
         valueText = ScanValueText.Text.Trim();
+        valueTextTo = ScanValueToText.Text.Trim();
 
         if (ScanTypeBox.SelectedItem is not MemoryDataType selectedType)
         {
@@ -1738,14 +1848,30 @@ public partial class MainWindow : Window
             return false;
         }
 
-        if (ScanComparisonBox.SelectedItem is not ScanComparison selectedComparison)
+        if (ScanComparisonBox.SelectedItem is not ScanComparisonOption selectedComparison)
         {
             MessageBox.Show(this, "Select condition.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
         dataType = selectedType;
-        comparison = selectedComparison;
+        comparison = selectedComparison.Value;
+
+        if (comparison == ScanComparison.UnknownInitial)
+        {
+            return true;
+        }
+
+        if (comparison == ScanComparison.Between)
+        {
+            if (!ScanService.TryParseValue(dataType, valueText, out _) || !ScanService.TryParseValue(dataType, valueTextTo, out _))
+            {
+                MessageBox.Show(this, "Invalid range values for selected type.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+
+            return true;
+        }
 
         var inputRequired = comparison is ScanComparison.Equal or ScanComparison.NotEqual or ScanComparison.Greater or ScanComparison.Less;
         if (inputRequired && !ScanService.TryParseValue(dataType, valueText, out _))
@@ -1995,6 +2121,24 @@ public partial class MainWindow : Window
         base.OnClosed(e);
     }
 
+
+    private sealed class ScanComparisonOption
+    {
+        public ScanComparisonOption(ScanComparison value, string label)
+        {
+            Value = value;
+            Label = label;
+        }
+
+        public ScanComparison Value { get; }
+        public string Label { get; }
+
+        public override string ToString()
+        {
+            return Label;
+        }
+    }
+
     public sealed class ScanResultRow : INotifyPropertyChanged
     {
         private string _valueText;
@@ -2126,6 +2270,7 @@ public partial class MainWindow : Window
         }
     }
 }
+
 
 
 

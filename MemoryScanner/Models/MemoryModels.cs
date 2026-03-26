@@ -30,10 +30,12 @@ public static class MemoryDataTypeUiOrder
 }
 public enum ScanComparison
 {
+    UnknownInitial,
     Equal,
     NotEqual,
     Greater,
     Less,
+    Between,
     Increased,
     Decreased,
     Changed,

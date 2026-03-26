@@ -1,4 +1,4 @@
-using MemoryScanner.Models;
+﻿using MemoryScanner.Models;
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.Threading.Tasks;
@@ -15,8 +15,10 @@ public sealed class ScanService
     private readonly IMemoryAccessor _memory;
     private readonly MemoryRegionEnumerator _regionEnumerator;
     private readonly List<ScanCandidate> _candidates = new();
+    public int CandidateCount => _candidates.Count;
     private delegate bool FirstScanMatcher(ReadOnlySpan<byte> span, int offset, out object value);
     private delegate bool NextScanMatcher(object current, object? previous);
+    private delegate T SpanReader<T>(ReadOnlySpan<byte> span, int offset);
 
     public ScanService(IMemoryAccessor memory, MemoryRegionEnumerator regionEnumerator)
     {
@@ -28,6 +30,7 @@ public sealed class ScanService
         MemoryDataType dataType,
         ScanComparison comparison,
         string? valueText,
+        string? valueTextTo,
         ScanExecutionOptions executionOptions,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken)
@@ -38,11 +41,19 @@ public sealed class ScanService
         if (!IsFirstScanComparisonSupported(comparison)) return results;
 
         object? input = null;
-        if (RequiresInput(comparison) && !TryParseValue(dataType, valueText, out input))
+        object? inputUpper = null;
+        if (RequiresPrimaryInput(comparison) && !TryParseValue(dataType, valueText, out input))
         {
             return results;
         }
-        if (!TryCreateFirstScanMatcher(dataType, comparison, input, out var firstMatcher))
+
+        if (RequiresSecondaryInput(comparison) && !TryParseValue(dataType, valueTextTo, out inputUpper))
+        {
+            return results;
+        }
+
+        var includeResultRows = comparison != ScanComparison.UnknownInitial;
+        if (!TryCreateFirstScanMatcher(dataType, comparison, input, inputUpper, out var firstMatcher))
         {
             return results;
         }
@@ -131,11 +142,11 @@ public sealed class ScanService
                         }
 
                         ulong address = cursor + (ulong)pos;
-                        local.AddMatch(address, value, dataType);
+                        local.AddMatch(address, value, dataType, includeResultRows);
 
-                        if (local.Results.Count >= 128)
+                        if (local.Candidates.Count >= 128)
                         {
-                            FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate);
+                            FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
                             if (Volatile.Read(ref limitReached) == 1)
                             {
                                 loopState.Stop();
@@ -151,7 +162,7 @@ public sealed class ScanService
                 return local;
             }, local =>
             {
-                FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate);
+                FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
                 if (local.ProcessedCount > 0)
                 {
                     var done = Interlocked.Add(ref processed, local.ProcessedCount);
@@ -178,6 +189,7 @@ public sealed class ScanService
         MemoryDataType dataType,
         ScanComparison comparison,
         string? valueText,
+        string? valueTextTo,
         ScanExecutionOptions executionOptions,
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken)
@@ -186,13 +198,23 @@ public sealed class ScanService
         if (!_memory.IsAttached || _candidates.Count == 0) return results;
 
         object? input = null;
-        if (RequiresInput(comparison) && !TryParseValue(dataType, valueText, out input))
+        object? inputUpper = null;
+        if (comparison == ScanComparison.UnknownInitial)
+        {
+            return results;
+        }
+        if (RequiresPrimaryInput(comparison) && !TryParseValue(dataType, valueText, out input))
+        {
+            return results;
+        }
+        if (RequiresSecondaryInput(comparison) && !TryParseValue(dataType, valueTextTo, out inputUpper))
         {
             return results;
         }
         var effectiveLimit = executionOptions.NormalizedResultLimit();
         var hasLimit = executionOptions.UseResultLimit;
-        if (!TryCreateNextScanMatcher(dataType, comparison, input, out var matcher))
+        const bool includeResultRows = true;
+        if (!TryCreateNextScanMatcher(dataType, comparison, input, inputUpper, out var matcher))
         {
             return results;
         }
@@ -225,7 +247,7 @@ public sealed class ScanService
 
                 if (_memory.TryReadValue(candidate.Address, dataType, out var newValue) && matcher(newValue, candidate.LastValue))
                 {
-                    local.AddMatch(candidate.Address, newValue, dataType);
+                    local.AddMatch(candidate.Address, newValue, dataType, includeResultRows);
                 }
 
                 local.ProcessedCount++;
@@ -236,9 +258,9 @@ public sealed class ScanService
                     TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
                 }
 
-                if (local.Results.Count >= 128)
+                if (local.Candidates.Count >= 128)
                 {
-                    FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate);
+                    FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
                     if (Volatile.Read(ref limitReached) == 1)
                     {
                         loopState.Stop();
@@ -248,7 +270,7 @@ public sealed class ScanService
                 return local;
             }, local =>
             {
-                FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate);
+                FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
                 if (local.ProcessedCount > 0)
                 {
                     var done = Interlocked.Add(ref processed, local.ProcessedCount);
@@ -297,9 +319,9 @@ public sealed class ScanService
         return true;
     }
 
-    private static void FlushLocal(LocalCollector local, List<ScanResult> globalResults, List<ScanCandidate> globalCandidates, bool hasLimit, int effectiveLimit, ref int limitReached, object gate)
+    private static void FlushLocal(LocalCollector local, List<ScanResult> globalResults, List<ScanCandidate> globalCandidates, bool hasLimit, int effectiveLimit, ref int limitReached, object gate, bool includeResults)
     {
-        if (local.Results.Count == 0)
+        if (local.Results.Count == 0 && local.Candidates.Count == 0)
         {
             return;
         }
@@ -308,23 +330,31 @@ public sealed class ScanService
         {
             if (!hasLimit)
             {
-                globalResults.AddRange(local.Results);
+                if (includeResults)
+                {
+                    globalResults.AddRange(local.Results);
+                }
+
                 globalCandidates.AddRange(local.Candidates);
             }
             else
             {
-                int remaining = effectiveLimit - globalResults.Count;
+                int remaining = effectiveLimit - globalCandidates.Count;
                 if (remaining > 0)
                 {
-                    int toCopy = Math.Min(remaining, local.Results.Count);
+                    int toCopy = Math.Min(remaining, local.Candidates.Count);
                     for (int i = 0; i < toCopy; i++)
                     {
-                        globalResults.Add(local.Results[i]);
+                        if (includeResults)
+                        {
+                            globalResults.Add(local.Results[i]);
+                        }
+
                         globalCandidates.Add(local.Candidates[i]);
                     }
                 }
 
-                if (globalResults.Count >= effectiveLimit)
+                if (globalCandidates.Count >= effectiveLimit)
                 {
                     Volatile.Write(ref limitReached, 1);
                 }
@@ -339,179 +369,152 @@ public sealed class ScanService
         MemoryDataType type,
         ScanComparison comparison,
         object? input,
+        object? inputUpper,
         out FirstScanMatcher matcher)
     {
-        matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
-        {
-            value = 0;
-            return false;
-        };
-
-        if (input is null)
-        {
-            return false;
-        }
-
         switch (type)
         {
             case MemoryDataType.Byte:
-            {
-                if (!TryCoerce(input, out byte target))
-                {
-                    return false;
-                }
-
-                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
-                {
-                    var current = span[offset];
-                    if (!MatchDirect(comparison, current, target))
-                    {
-                        value = 0;
-                        return false;
-                    }
-
-                    value = current;
-                    return true;
-                };
-                return true;
-            }
+                return BuildFirstScanMatcher<byte>(comparison, input, inputUpper, (span, offset) => span[offset], TryCoerce, out matcher);
             case MemoryDataType.Int16:
-            {
-                if (!TryCoerce(input, out int target))
-                {
-                    return false;
-                }
-
-                short targetShort = (short)target;
-                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
-                {
-                    var current = BinaryPrimitives.ReadInt16LittleEndian(span.Slice(offset, sizeof(short)));
-                    if (!MatchDirect(comparison, current, targetShort))
-                    {
-                        value = 0;
-                        return false;
-                    }
-
-                    value = current;
-                    return true;
-                };
-                return true;
-            }
+                return BuildFirstScanMatcher<short>(comparison, input, inputUpper,
+                    (span, offset) => BinaryPrimitives.ReadInt16LittleEndian(span.Slice(offset, sizeof(short))),
+                    TryCoerce,
+                    out matcher);
             case MemoryDataType.Int32:
-            {
-                if (!TryCoerce(input, out int target))
-                {
-                    return false;
-                }
-
-                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
-                {
-                    var current = BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)));
-                    if (!MatchDirect(comparison, current, target))
-                    {
-                        value = 0;
-                        return false;
-                    }
-
-                    value = current;
-                    return true;
-                };
-                return true;
-            }
+                return BuildFirstScanMatcher<int>(comparison, input, inputUpper,
+                    (span, offset) => BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int))),
+                    TryCoerce,
+                    out matcher);
             case MemoryDataType.Int64:
-            {
-                if (!TryCoerce(input, out long target))
-                {
-                    return false;
-                }
-
-                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
-                {
-                    var current = BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long)));
-                    if (!MatchDirect(comparison, current, target))
-                    {
-                        value = 0;
-                        return false;
-                    }
-
-                    value = current;
-                    return true;
-                };
-                return true;
-            }
+                return BuildFirstScanMatcher<long>(comparison, input, inputUpper,
+                    (span, offset) => BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long))),
+                    TryCoerce,
+                    out matcher);
             case MemoryDataType.Float:
-            {
-                if (!TryCoerce(input, out float target))
-                {
-                    return false;
-                }
-
-                matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
-                {
-                    var current = BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int))));
-                    if (!MatchDirect(comparison, current, target))
-                    {
-                        value = 0;
-                        return false;
-                    }
-
-                    value = current;
-                    return true;
-                };
-                return true;
-            }
+                return BuildFirstScanMatcher<float>(comparison, input, inputUpper,
+                    (span, offset) => BitConverter.Int32BitsToSingle(BinaryPrimitives.ReadInt32LittleEndian(span.Slice(offset, sizeof(int)))),
+                    TryCoerce,
+                    out matcher);
             case MemoryDataType.Double:
-            {
-                if (!TryCoerce(input, out double target))
-                {
-                    return false;
-                }
-
+                return BuildFirstScanMatcher<double>(comparison, input, inputUpper,
+                    (span, offset) => BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long)))),
+                    TryCoerce,
+                    out matcher);
+            default:
                 matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
                 {
-                    var current = BitConverter.Int64BitsToDouble(BinaryPrimitives.ReadInt64LittleEndian(span.Slice(offset, sizeof(long))));
-                    if (!MatchDirect(comparison, current, target))
-                    {
-                        value = 0;
-                        return false;
-                    }
-
-                    value = current;
-                    return true;
+                    value = 0;
+                    return false;
                 };
-                return true;
-            }
-            default:
                 return false;
         }
     }
+
+    private static bool BuildFirstScanMatcher<T>(
+        ScanComparison comparison,
+        object? input,
+        object? inputUpper,
+        SpanReader<T> reader,
+        CoerceFunc<T> coerce,
+        out FirstScanMatcher matcher)
+        where T : struct, IComparable<T>
+    {
+        matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+        {
+            value = default(T);
+            return false;
+        };
+
+        T inputValue = default;
+        bool hasInput = false;
+        if (RequiresPrimaryInput(comparison))
+        {
+            if (input is null || !coerce(input, out inputValue))
+            {
+                return false;
+            }
+
+            hasInput = true;
+        }
+
+        T inputUpperValue = default;
+        bool hasInputUpper = false;
+        if (RequiresSecondaryInput(comparison))
+        {
+            if (inputUpper is null || !coerce(inputUpper, out inputUpperValue))
+            {
+                return false;
+            }
+
+            hasInputUpper = true;
+        }
+
+        matcher = (ReadOnlySpan<byte> span, int offset, out object value) =>
+        {
+            var current = reader(span, offset);
+            if (!MatchFirstTyped(comparison, current, inputValue, inputUpperValue, hasInput, hasInputUpper))
+            {
+                value = default(T);
+                return false;
+            }
+
+            value = current;
+            return true;
+        };
+
+        return true;
+    }
+
+    private static bool MatchFirstTyped<T>(
+        ScanComparison comparison,
+        T current,
+        T input,
+        T inputUpper,
+        bool hasInput,
+        bool hasInputUpper)
+        where T : struct, IComparable<T>
+    {
+        return comparison switch
+        {
+            ScanComparison.UnknownInitial => true,
+            ScanComparison.Equal => hasInput && current.CompareTo(input) == 0,
+            ScanComparison.NotEqual => hasInput && current.CompareTo(input) != 0,
+            ScanComparison.Greater => hasInput && current.CompareTo(input) > 0,
+            ScanComparison.Less => hasInput && current.CompareTo(input) < 0,
+            ScanComparison.Between => hasInput && hasInputUpper && IsWithinRange(current, input, inputUpper),
+            _ => false
+        };
+    }
+
     private delegate bool CoerceFunc<T>(object value, out T result);
 
     private static bool TryCreateNextScanMatcher(
         MemoryDataType dataType,
         ScanComparison comparison,
         object? input,
+        object? inputUpper,
         out NextScanMatcher matcher)
     {
         switch (dataType)
         {
             case MemoryDataType.Byte:
-                matcher = CreateNextMatcher<byte>(comparison, input, TryCoerce);
+                matcher = CreateNextMatcher<byte>(comparison, input, inputUpper, TryCoerce);
                 return true;
             case MemoryDataType.Int16:
-                matcher = CreateNextMatcher<int>(comparison, input, TryCoerce);
+                matcher = CreateNextMatcher<short>(comparison, input, inputUpper, TryCoerce);
                 return true;
             case MemoryDataType.Int32:
-                matcher = CreateNextMatcher<int>(comparison, input, TryCoerce);
+                matcher = CreateNextMatcher<int>(comparison, input, inputUpper, TryCoerce);
                 return true;
             case MemoryDataType.Int64:
-                matcher = CreateNextMatcher<long>(comparison, input, TryCoerce);
+                matcher = CreateNextMatcher<long>(comparison, input, inputUpper, TryCoerce);
                 return true;
             case MemoryDataType.Float:
-                matcher = CreateNextMatcher<float>(comparison, input, TryCoerce);
+                matcher = CreateNextMatcher<float>(comparison, input, inputUpper, TryCoerce);
                 return true;
             case MemoryDataType.Double:
-                matcher = CreateNextMatcher<double>(comparison, input, TryCoerce);
+                matcher = CreateNextMatcher<double>(comparison, input, inputUpper, TryCoerce);
                 return true;
             default:
                 matcher = (_, _) => false;
@@ -522,11 +525,15 @@ public sealed class ScanService
     private static NextScanMatcher CreateNextMatcher<T>(
         ScanComparison comparison,
         object? input,
+        object? inputUpper,
         CoerceFunc<T> coerce)
         where T : struct, IComparable<T>
     {
         T inputValue = default;
         var hasInput = input is not null && coerce(input, out inputValue);
+
+        T inputUpperValue = default;
+        var hasInputUpper = inputUpper is not null && coerce(inputUpper, out inputUpperValue);
 
         return (current, previous) =>
         {
@@ -537,74 +544,9 @@ public sealed class ScanService
 
             T previousValue = default;
             var hasPrevious = previous is not null && coerce(previous, out previousValue);
-            return MatchTyped(comparison, currentValue, inputValue, previousValue, hasInput, hasPrevious);
+            return MatchTyped(comparison, currentValue, inputValue, inputUpperValue, previousValue, hasInput, hasInputUpper, hasPrevious);
         };
     }
-
-    private static bool MatchFast(MemoryDataType type, ScanComparison comparison, object current, object? input, object? previous)
-    {
-        try
-        {
-            switch (type)
-            {
-                case MemoryDataType.Byte:
-                    if (!TryCoerce(current, out byte currentByte)) return false;
-                    byte inputByte = default;
-                    bool hasByteInput = input is not null && TryCoerce(input, out inputByte);
-                    byte previousByte = default;
-                    bool hasBytePrevious = previous is not null && TryCoerce(previous, out previousByte);
-                    return MatchTyped(comparison, currentByte, inputByte, previousByte, hasByteInput, hasBytePrevious);
-
-                case MemoryDataType.Int16:
-                    if (!TryCoerce(current, out int currentShort)) return false;
-                    int inputShort = default;
-                    bool hasShortInput = input is not null && TryCoerce(input, out inputShort);
-                    int previousShort = default;
-                    bool hasShortPrevious = previous is not null && TryCoerce(previous, out previousShort);
-                    return MatchTyped(comparison, currentShort, inputShort, previousShort, hasShortInput, hasShortPrevious);
-
-                case MemoryDataType.Int32:
-                    if (!TryCoerce(current, out int currentInt)) return false;
-                    int inputInt = default;
-                    bool hasIntInput = input is not null && TryCoerce(input, out inputInt);
-                    int previousInt = default;
-                    bool hasIntPrevious = previous is not null && TryCoerce(previous, out previousInt);
-                    return MatchTyped(comparison, currentInt, inputInt, previousInt, hasIntInput, hasIntPrevious);
-
-                case MemoryDataType.Int64:
-                    if (!TryCoerce(current, out long currentLong)) return false;
-                    long inputLong = default;
-                    bool hasLongInput = input is not null && TryCoerce(input, out inputLong);
-                    long previousLong = default;
-                    bool hasLongPrevious = previous is not null && TryCoerce(previous, out previousLong);
-                    return MatchTyped(comparison, currentLong, inputLong, previousLong, hasLongInput, hasLongPrevious);
-
-                case MemoryDataType.Float:
-                    if (!TryCoerce(current, out float currentFloat)) return false;
-                    float inputFloat = default;
-                    bool hasFloatInput = input is not null && TryCoerce(input, out inputFloat);
-                    float previousFloat = default;
-                    bool hasFloatPrevious = previous is not null && TryCoerce(previous, out previousFloat);
-                    return MatchTyped(comparison, currentFloat, inputFloat, previousFloat, hasFloatInput, hasFloatPrevious);
-
-                case MemoryDataType.Double:
-                    if (!TryCoerce(current, out double currentDouble)) return false;
-                    double inputDouble = default;
-                    bool hasDoubleInput = input is not null && TryCoerce(input, out inputDouble);
-                    double previousDouble = default;
-                    bool hasDoublePrevious = previous is not null && TryCoerce(previous, out previousDouble);
-                    return MatchTyped(comparison, currentDouble, inputDouble, previousDouble, hasDoubleInput, hasDoublePrevious);
-
-                default:
-                    return false;
-            }
-        }
-        catch
-        {
-            return false;
-        }
-    }
-
     private static bool TryCoerce(object value, out byte result)
     {
         result = 0;
@@ -624,6 +566,24 @@ public sealed class ScanService
         };
     }
 
+    private static bool TryCoerce(object value, out short result)
+    {
+        result = 0;
+        return value switch
+        {
+            short s => AssignTry(s, out result),
+            byte b => AssignTry((short)b, out result),
+            sbyte sb => AssignTry((short)sb, out result),
+            ushort us when us <= short.MaxValue => AssignTry((short)us, out result),
+            int i when i >= short.MinValue && i <= short.MaxValue => AssignTry((short)i, out result),
+            uint ui when ui <= short.MaxValue => AssignTry((short)ui, out result),
+            long l when l >= short.MinValue && l <= short.MaxValue => AssignTry((short)l, out result),
+            ulong ul when ul <= (ulong)short.MaxValue => AssignTry((short)ul, out result),
+            float f when f >= short.MinValue && f <= short.MaxValue && f % 1 == 0 => AssignTry((short)f, out result),
+            double d when d >= short.MinValue && d <= short.MaxValue && d % 1 == 0 => AssignTry((short)d, out result),
+            _ => false
+        };
+    }
     private static bool TryCoerce(object value, out int result)
     {
         result = 0;
@@ -709,8 +669,10 @@ public sealed class ScanService
         ScanComparison comparison,
         T current,
         T input,
+        T inputUpper,
         T previous,
         bool hasInput,
+        bool hasInputUpper,
         bool hasPrevious)
         where T : struct, IComparable<T>
     {
@@ -720,6 +682,7 @@ public sealed class ScanService
             ScanComparison.NotEqual => hasInput && current.CompareTo(input) != 0,
             ScanComparison.Greater => hasInput && current.CompareTo(input) > 0,
             ScanComparison.Less => hasInput && current.CompareTo(input) < 0,
+            ScanComparison.Between => hasInput && hasInputUpper && IsWithinRange(current, input, inputUpper),
             ScanComparison.Increased => hasPrevious && current.CompareTo(previous) > 0,
             ScanComparison.Decreased => hasPrevious && current.CompareTo(previous) < 0,
             ScanComparison.Changed => hasPrevious && current.CompareTo(previous) != 0,
@@ -728,18 +691,15 @@ public sealed class ScanService
         };
     }
 
-    private static bool MatchDirect<T>(ScanComparison comparison, T current, T input) where T : struct, IComparable<T>
+    private static bool IsWithinRange<T>(T current, T boundaryA, T boundaryB)
+        where T : struct, IComparable<T>
     {
-        return comparison switch
-        {
-            ScanComparison.Equal => current.CompareTo(input) == 0,
-            ScanComparison.NotEqual => current.CompareTo(input) != 0,
-            ScanComparison.Greater => current.CompareTo(input) > 0,
-            ScanComparison.Less => current.CompareTo(input) < 0,
-            _ => false
-        };
-    }
+        var order = boundaryA.CompareTo(boundaryB);
+        var low = order <= 0 ? boundaryA : boundaryB;
+        var high = order <= 0 ? boundaryB : boundaryA;
 
+        return current.CompareTo(low) >= 0 && current.CompareTo(high) <= 0;
+    }
     private static void ResolveDepth(ScanDepthProfile profile, out bool includePrivate, out bool includeImage, out bool scanUnaligned, out int stepMultiplier)
     {
         switch (profile)
@@ -856,16 +816,29 @@ public sealed class ScanService
         _ => sizeof(int)
     };
 
-    private static bool RequiresInput(ScanComparison comparison)
+    private static bool RequiresPrimaryInput(ScanComparison comparison)
     {
-        return comparison is ScanComparison.Equal or ScanComparison.NotEqual or ScanComparison.Greater or ScanComparison.Less;
+        return comparison is ScanComparison.Equal
+            or ScanComparison.NotEqual
+            or ScanComparison.Greater
+            or ScanComparison.Less
+            or ScanComparison.Between;
+    }
+
+    private static bool RequiresSecondaryInput(ScanComparison comparison)
+    {
+        return comparison == ScanComparison.Between;
     }
 
     private static bool IsFirstScanComparisonSupported(ScanComparison comparison)
     {
-        return comparison is ScanComparison.Equal or ScanComparison.NotEqual or ScanComparison.Greater or ScanComparison.Less;
+        return comparison is ScanComparison.UnknownInitial
+            or ScanComparison.Equal
+            or ScanComparison.NotEqual
+            or ScanComparison.Greater
+            or ScanComparison.Less
+            or ScanComparison.Between;
     }
-
     private static string FormatValue(object value)
     {
         return value switch
@@ -888,14 +861,17 @@ public sealed class ScanService
         public List<ScanCandidate> Candidates { get; } = new(128);
         public long ProcessedCount { get; set; }
 
-        public void AddMatch(ulong address, object value, MemoryDataType type)
+        public void AddMatch(ulong address, object value, MemoryDataType type, bool includeResults)
         {
-            Results.Add(new ScanResult
+            if (includeResults)
             {
-                Address = address,
-                DataType = type,
-                ValueText = FormatValue(value)
-            });
+                Results.Add(new ScanResult
+                {
+                    Address = address,
+                    DataType = type,
+                    ValueText = FormatValue(value)
+                });
+            }
 
             Candidates.Add(new ScanCandidate
             {
@@ -907,6 +883,15 @@ public sealed class ScanService
 
     private readonly record struct ScanSlice(ulong Start, ulong End);
 }
+
+
+
+
+
+
+
+
+
 
 
 
