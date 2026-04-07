@@ -1,21 +1,37 @@
 ﻿using MemoryScanner.Models;
 using System.Buffers.Binary;
 using System.Diagnostics;
+using System.IO;
 using System.Threading.Tasks;
 
 namespace MemoryScanner.Core;
 
-public sealed class ScanService
+public sealed class ScanService : IDisposable
 {
     private const int InitialReadChunkSize = 256 * 1024;
     private const int MinReadChunkSize = 16 * 1024;
     private const int MaxReadChunkSize = 1024 * 1024;
     private const ulong RegionSliceSize = 8UL * 1024 * 1024;
+    private const int CandidateFlushBatchSize = 128;
+    private const int CandidateChunkSize = 64 * 1024;
 
     private readonly IMemoryAccessor _memory;
     private readonly MemoryRegionEnumerator _regionEnumerator;
-    private readonly List<ScanCandidate> _candidates = new();
-    public int CandidateCount => _candidates.Count;
+    private readonly object _snapshotGate = new();
+    private readonly EventHandler _processExitHandler;
+    private string? _candidateSnapshotPath;
+    private int _candidateCount;
+    private bool _disposed;
+    public int CandidateCount
+    {
+        get
+        {
+            lock (_snapshotGate)
+            {
+                return _candidateCount;
+            }
+        }
+    }
     private delegate bool FirstScanMatcher(ReadOnlySpan<byte> span, int offset, out object value);
     private delegate bool NextScanMatcher(object current, object? previous);
     private delegate T SpanReader<T>(ReadOnlySpan<byte> span, int offset);
@@ -24,6 +40,9 @@ public sealed class ScanService
     {
         _memory = memory;
         _regionEnumerator = regionEnumerator;
+        _processExitHandler = (_, _) => ClearCandidateSnapshot();
+        AppDomain.CurrentDomain.ProcessExit += _processExitHandler;
+        AppDomain.CurrentDomain.DomainUnload += _processExitHandler;
     }
 
     public IReadOnlyList<ScanResult> FirstScan(
@@ -35,7 +54,12 @@ public sealed class ScanService
         IProgress<ScanProgressInfo>? progress,
         CancellationToken cancellationToken)
     {
-        _candidates.Clear();
+        if (_disposed)
+        {
+            return Array.Empty<ScanResult>();
+        }
+
+        ClearCandidateSnapshot();
         var results = new List<ScanResult>();
         if (!_memory.IsAttached) return results;
         if (!IsFirstScanComparisonSupported(comparison)) return results;
@@ -70,11 +94,11 @@ public sealed class ScanService
         ReportProgress(progress, 0, totalSteps, "Scanning memory");
 
         var gate = new object();
-        var collectedCandidates = new List<ScanCandidate>();
         long processed = 0;
         int limitReached = 0;
         var progressGate = new object();
         long lastProgressTicks = 0;
+        using var snapshotWriter = CandidateSnapshotWriter.Create();
 
         var parallelOptions = new ParallelOptions
         {
@@ -144,9 +168,9 @@ public sealed class ScanService
                         ulong address = cursor + (ulong)pos;
                         local.AddMatch(address, value, dataType, includeResultRows);
 
-                        if (local.Candidates.Count >= 128)
+                        if (local.Candidates.Count >= CandidateFlushBatchSize)
                         {
-                            FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
+                            FlushLocal(local, results, snapshotWriter, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
                             if (Volatile.Read(ref limitReached) == 1)
                             {
                                 loopState.Stop();
@@ -162,7 +186,7 @@ public sealed class ScanService
                 return local;
             }, local =>
             {
-                FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
+                FlushLocal(local, results, snapshotWriter, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
                 if (local.ProcessedCount > 0)
                 {
                     var done = Interlocked.Add(ref processed, local.ProcessedCount);
@@ -177,8 +201,8 @@ public sealed class ScanService
         {
         }
 
-        _candidates.Clear();
-        _candidates.AddRange(collectedCandidates);
+        var snapshotCommit = snapshotWriter.Commit();
+        SetCandidateSnapshot(snapshotCommit.FilePath, snapshotCommit.Count);
 
         var finalStatus = cancellationToken.IsCancellationRequested ? "Scan canceled" : "Scan finished";
         ReportProgress(progress, Math.Min(processed, totalSteps), totalSteps, finalStatus);
@@ -195,7 +219,23 @@ public sealed class ScanService
         CancellationToken cancellationToken)
     {
         var results = new List<ScanResult>();
-        if (!_memory.IsAttached || _candidates.Count == 0) return results;
+        if (_disposed || !_memory.IsAttached)
+        {
+            return results;
+        }
+
+        string? sourceSnapshotPath;
+        int sourceCandidateCount;
+        lock (_snapshotGate)
+        {
+            sourceSnapshotPath = _candidateSnapshotPath;
+            sourceCandidateCount = _candidateCount;
+        }
+
+        if (sourceCandidateCount == 0 || string.IsNullOrWhiteSpace(sourceSnapshotPath))
+        {
+            return results;
+        }
 
         object? input = null;
         object? inputUpper = null;
@@ -219,16 +259,21 @@ public sealed class ScanService
             return results;
         }
 
-        var snapshot = _candidates.ToArray();
-        var total = Math.Max(1, snapshot.Length);
+        if (!File.Exists(sourceSnapshotPath))
+        {
+            ClearCandidateSnapshot();
+            return results;
+        }
+
+        var total = Math.Max(1, sourceCandidateCount);
         ReportProgress(progress, 0, total, "Filtering previous results");
 
         var gate = new object();
-        var collectedCandidates = new List<ScanCandidate>();
         int limitReached = 0;
         long processed = 0;
         var progressGate = new object();
         long lastProgressTicks = 0;
+        using var filteredSnapshotWriter = CandidateSnapshotWriter.Create();
 
         var parallelOptions = new ParallelOptions
         {
@@ -237,46 +282,55 @@ public sealed class ScanService
 
         try
         {
-            Parallel.ForEach(snapshot, parallelOptions, () => new LocalCollector(), (candidate, loopState, local) =>
+            foreach (var chunk in EnumerateCandidateChunks(sourceSnapshotPath, CandidateChunkSize, cancellationToken))
             {
                 if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                 {
-                    loopState.Stop();
-                    return local;
+                    break;
                 }
 
-                if (_memory.TryReadValue(candidate.Address, dataType, out var newValue) && matcher(newValue, candidate.LastValue))
+                Parallel.ForEach(chunk, parallelOptions, () => new LocalCollector(), (candidate, loopState, local) =>
                 {
-                    local.AddMatch(candidate.Address, newValue, dataType, includeResultRows);
-                }
-
-                local.ProcessedCount++;
-                if ((local.ProcessedCount & 1023) == 0)
-                {
-                    var done = Interlocked.Add(ref processed, 1024);
-                    local.ProcessedCount -= 1024;
-                    TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
-                }
-
-                if (local.Candidates.Count >= 128)
-                {
-                    FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
-                    if (Volatile.Read(ref limitReached) == 1)
+                    if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                     {
                         loopState.Stop();
+                        return local;
                     }
-                }
 
-                return local;
-            }, local =>
-            {
-                FlushLocal(local, results, collectedCandidates, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
-                if (local.ProcessedCount > 0)
+                    var previousValue = UnpackCandidateValue(in candidate);
+                    if (_memory.TryReadValue(candidate.Address, dataType, out var newValue) && matcher(newValue, previousValue))
+                    {
+                        local.AddMatch(candidate.Address, newValue, dataType, includeResultRows);
+                    }
+
+                    local.ProcessedCount++;
+                    if ((local.ProcessedCount & 1023) == 0)
+                    {
+                        var done = Interlocked.Add(ref processed, 1024);
+                        local.ProcessedCount -= 1024;
+                        TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
+                    }
+
+                    if (local.Candidates.Count >= CandidateFlushBatchSize)
+                    {
+                        FlushLocal(local, results, filteredSnapshotWriter, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
+                        if (Volatile.Read(ref limitReached) == 1)
+                        {
+                            loopState.Stop();
+                        }
+                    }
+
+                    return local;
+                }, local =>
                 {
-                    var done = Interlocked.Add(ref processed, local.ProcessedCount);
-                    TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
-                }
-            });
+                    FlushLocal(local, results, filteredSnapshotWriter, hasLimit, effectiveLimit, ref limitReached, gate, includeResultRows);
+                    if (local.ProcessedCount > 0)
+                    {
+                        var done = Interlocked.Add(ref processed, local.ProcessedCount);
+                        TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
+                    }
+                });
+            }
         }
         catch (OperationCanceledException)
         {
@@ -285,15 +339,31 @@ public sealed class ScanService
         {
         }
 
-        _candidates.Clear();
-        _candidates.AddRange(collectedCandidates);
+        var filteredCommit = filteredSnapshotWriter.Commit();
+        SetCandidateSnapshot(filteredCommit.FilePath, filteredCommit.Count);
 
         var finalStatus = cancellationToken.IsCancellationRequested ? "Scan canceled" : "Scan finished";
         ReportProgress(progress, Math.Min(processed, total), total, finalStatus);
         return results;
     }
 
-    public void Reset() => _candidates.Clear();
+    public void Reset()
+    {
+        ClearCandidateSnapshot();
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        AppDomain.CurrentDomain.ProcessExit -= _processExitHandler;
+        AppDomain.CurrentDomain.DomainUnload -= _processExitHandler;
+        ClearCandidateSnapshot();
+    }
 
     public static bool TryParseValue(MemoryDataType dataType, string? text, out object value)
     {
@@ -319,7 +389,150 @@ public sealed class ScanService
         return true;
     }
 
-    private static void FlushLocal(LocalCollector local, List<ScanResult> globalResults, List<ScanCandidate> globalCandidates, bool hasLimit, int effectiveLimit, ref int limitReached, object gate, bool includeResults)
+    private void ClearCandidateSnapshot()
+    {
+        string? pathToDelete;
+        lock (_snapshotGate)
+        {
+            pathToDelete = _candidateSnapshotPath;
+            _candidateSnapshotPath = null;
+            _candidateCount = 0;
+        }
+
+        if (!string.IsNullOrWhiteSpace(pathToDelete))
+        {
+            TryDeleteFile(pathToDelete);
+        }
+    }
+
+    private void SetCandidateSnapshot(string filePath, int count)
+    {
+        string? oldPath;
+        lock (_snapshotGate)
+        {
+            oldPath = _candidateSnapshotPath;
+
+            if (_disposed || count <= 0)
+            {
+                _candidateSnapshotPath = null;
+                _candidateCount = 0;
+
+                if (!string.IsNullOrWhiteSpace(filePath))
+                {
+                    TryDeleteFile(filePath);
+                }
+
+                if (!string.IsNullOrWhiteSpace(oldPath) && !string.Equals(oldPath, filePath, StringComparison.OrdinalIgnoreCase))
+                {
+                    TryDeleteFile(oldPath);
+                }
+
+                return;
+            }
+
+            _candidateSnapshotPath = filePath;
+            _candidateCount = count;
+        }
+
+        if (!string.IsNullOrWhiteSpace(oldPath) && !string.Equals(oldPath, filePath, StringComparison.OrdinalIgnoreCase))
+        {
+            TryDeleteFile(oldPath);
+        }
+    }
+
+    private static void TryDeleteFile(string? path)
+    {
+        if (string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private static IEnumerable<ScanCandidate[]> EnumerateCandidateChunks(string snapshotPath, int chunkSize, CancellationToken cancellationToken)
+    {
+        using var stream = new FileStream(snapshotPath, FileMode.Open, FileAccess.Read, FileShare.Read, 256 * 1024, FileOptions.SequentialScan);
+        using var reader = new BinaryReader(stream);
+
+        while (stream.Position + CandidateSnapshotWriter.RecordSize <= stream.Length)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var chunk = new ScanCandidate[chunkSize];
+            int count = 0;
+            while (count < chunkSize && stream.Position + CandidateSnapshotWriter.RecordSize <= stream.Length)
+            {
+                var address = reader.ReadUInt64();
+                var rawValue = reader.ReadUInt64();
+                var valueType = (MemoryDataType)reader.ReadByte();
+                chunk[count++] = new ScanCandidate(address, rawValue, valueType);
+            }
+
+            if (count == 0)
+            {
+                yield break;
+            }
+
+            if (count == chunk.Length)
+            {
+                yield return chunk;
+            }
+            else
+            {
+                var trimmed = new ScanCandidate[count];
+                Array.Copy(chunk, trimmed, count);
+                yield return trimmed;
+            }
+        }
+    }
+
+    private static ulong PackCandidateValue(object value, MemoryDataType type)
+    {
+        return type switch
+        {
+            MemoryDataType.Byte => Convert.ToByte(value),
+            MemoryDataType.Int16 => unchecked((ulong)(ushort)Convert.ToInt16(value)),
+            MemoryDataType.Int32 => unchecked((ulong)(uint)Convert.ToInt32(value)),
+            MemoryDataType.Int64 => unchecked((ulong)Convert.ToInt64(value)),
+            MemoryDataType.Float => unchecked((ulong)(uint)BitConverter.SingleToInt32Bits(Convert.ToSingle(value))),
+            MemoryDataType.Double => unchecked((ulong)BitConverter.DoubleToInt64Bits(Convert.ToDouble(value))),
+            _ => 0UL
+        };
+    }
+
+    private static object UnpackCandidateValue(in ScanCandidate candidate)
+    {
+        return candidate.ValueType switch
+        {
+            MemoryDataType.Byte => (byte)(candidate.RawValue & 0xFF),
+            MemoryDataType.Int16 => unchecked((short)(candidate.RawValue & 0xFFFF)),
+            MemoryDataType.Int32 => unchecked((int)(candidate.RawValue & 0xFFFFFFFF)),
+            MemoryDataType.Int64 => unchecked((long)candidate.RawValue),
+            MemoryDataType.Float => BitConverter.Int32BitsToSingle(unchecked((int)(candidate.RawValue & 0xFFFFFFFF))),
+            MemoryDataType.Double => BitConverter.Int64BitsToDouble(unchecked((long)candidate.RawValue)),
+            _ => 0
+        };
+    }
+
+    private static void FlushLocal(
+        LocalCollector local,
+        List<ScanResult> globalResults,
+        CandidateSnapshotWriter snapshotWriter,
+        bool hasLimit,
+        int effectiveLimit,
+        ref int limitReached,
+        object gate,
+        bool includeResults)
     {
         if (local.Results.Count == 0 && local.Candidates.Count == 0)
         {
@@ -335,11 +548,11 @@ public sealed class ScanService
                     globalResults.AddRange(local.Results);
                 }
 
-                globalCandidates.AddRange(local.Candidates);
+                snapshotWriter.AddRange(local.Candidates, local.Candidates.Count);
             }
             else
             {
-                int remaining = effectiveLimit - globalCandidates.Count;
+                int remaining = effectiveLimit - snapshotWriter.Count;
                 if (remaining > 0)
                 {
                     int toCopy = Math.Min(remaining, local.Candidates.Count);
@@ -350,11 +563,11 @@ public sealed class ScanService
                             globalResults.Add(local.Results[i]);
                         }
 
-                        globalCandidates.Add(local.Candidates[i]);
+                        snapshotWriter.Add(local.Candidates[i]);
                     }
                 }
 
-                if (globalCandidates.Count >= effectiveLimit)
+                if (snapshotWriter.Count >= effectiveLimit)
                 {
                     Volatile.Write(ref limitReached, 1);
                 }
@@ -849,16 +1062,12 @@ public sealed class ScanService
         };
     }
 
-    private sealed class ScanCandidate
-    {
-        public ulong Address { get; set; }
-        public object LastValue { get; set; } = 0;
-    }
+    private readonly record struct ScanCandidate(ulong Address, ulong RawValue, MemoryDataType ValueType);
 
     private sealed class LocalCollector
     {
-        public List<ScanResult> Results { get; } = new(128);
-        public List<ScanCandidate> Candidates { get; } = new(128);
+        public List<ScanResult> Results { get; } = new(CandidateFlushBatchSize);
+        public List<ScanCandidate> Candidates { get; } = new(CandidateFlushBatchSize);
         public long ProcessedCount { get; set; }
 
         public void AddMatch(ulong address, object value, MemoryDataType type, bool includeResults)
@@ -873,13 +1082,71 @@ public sealed class ScanService
                 });
             }
 
-            Candidates.Add(new ScanCandidate
-            {
-                Address = address,
-                LastValue = value
-            });
+            Candidates.Add(new ScanCandidate(address, PackCandidateValue(value, type), type));
         }
     }
+
+    private sealed class CandidateSnapshotWriter : IDisposable
+    {
+        public const int RecordSize = sizeof(ulong) + sizeof(ulong) + sizeof(byte);
+
+        private readonly FileStream _stream;
+        private readonly BinaryWriter _writer;
+        private bool _committed;
+
+        public string FilePath { get; }
+        public int Count { get; private set; }
+
+        private CandidateSnapshotWriter(string filePath)
+        {
+            FilePath = filePath;
+            _stream = new FileStream(filePath, FileMode.Create, FileAccess.Write, FileShare.None, 256 * 1024, FileOptions.SequentialScan);
+            _writer = new BinaryWriter(_stream);
+        }
+
+        public static CandidateSnapshotWriter Create()
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"MemoryScanner_scan_{Guid.NewGuid():N}.bin");
+            return new CandidateSnapshotWriter(path);
+        }
+
+        public void Add(in ScanCandidate candidate)
+        {
+            _writer.Write(candidate.Address);
+            _writer.Write(candidate.RawValue);
+            _writer.Write((byte)candidate.ValueType);
+            Count++;
+        }
+
+        public void AddRange(List<ScanCandidate> candidates, int count)
+        {
+            for (int i = 0; i < count; i++)
+            {
+                Add(candidates[i]);
+            }
+        }
+
+        public SnapshotCommit Commit()
+        {
+            _writer.Flush();
+            _stream.Flush(true);
+            _committed = true;
+            return new SnapshotCommit(FilePath, Count);
+        }
+
+        public void Dispose()
+        {
+            _writer.Dispose();
+            _stream.Dispose();
+
+            if (!_committed)
+            {
+                TryDeleteFile(FilePath);
+            }
+        }
+    }
+
+    private readonly record struct SnapshotCommit(string FilePath, int Count);
 
     private readonly record struct ScanSlice(ulong Start, ulong End);
 }

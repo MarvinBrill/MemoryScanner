@@ -1,4 +1,4 @@
-<Window x:Class="MemoryScanner.MainWindow"
+﻿<Window x:Class="MemoryScanner.MainWindow"
         xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
         xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
         xmlns:d="http://schemas.microsoft.com/expression/blend/2008"
@@ -115,6 +115,7 @@
                                 <MenuItem Header="Copy Address" Click="CopyWatchAddress_OnClick"/>
                                 <Separator/>
                                 <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
+                                <MenuItem Header="Repair Pointer Base..." Click="RepairPointerBaseFromWatch_OnClick"/>
                                 <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromWatch_OnClick"/>
                                 <MenuItem Header="Open Memory Viewer" Click="OpenMemoryViewerFromWatch_OnClick"/>
                                 <MenuItem Header="Find out what writes/accesses this address" Click="FindWriteAccessFromWatch_OnClick"/>
@@ -143,7 +144,12 @@
                     </DataGrid>
 
                     <Grid Grid.Row="3" Margin="0,8,0,0">
-                        <StackPanel Orientation="Horizontal" HorizontalAlignment="Left">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="*"/>
+                            <ColumnDefinition Width="Auto"/>
+                        </Grid.ColumnDefinitions>
+
+                        <StackPanel Grid.Column="0" Orientation="Horizontal" HorizontalAlignment="Left">
                             <Button Width="42" Height="30" Margin="0,0,8,0" Click="AddWatchEntry_OnClick" ToolTip="Add Entry">
                                 <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE710;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Button>
@@ -151,6 +157,13 @@
                                 <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE74D;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
                             </Button>
                         </StackPanel>
+
+                        <Button Grid.Column="1"
+                                Width="130"
+                                Height="30"
+                                HorizontalAlignment="Right"
+                                Content="Copy List Format..."
+                                Click="CopyWatchListFormat_OnClick"/>
                     </Grid>
                 </Grid>
             </Border>
@@ -287,6 +300,7 @@
         </Grid>
     </Grid>
 </Window>
+
 
 
 

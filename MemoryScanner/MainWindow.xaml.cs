@@ -7,6 +7,7 @@ using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Text;
 using System.Windows;
 using System.Windows.Controls;
 using System.Windows.Controls.Primitives;
@@ -23,6 +24,7 @@ public partial class MainWindow : Window
     private const int MaxWatchRefreshBatchSize = 256;
     private const int MinScanResultRefreshBatchSize = 32;
     private const int MaxScanResultRefreshBatchSize = 512;
+    private const int ScanResultQuickDoubleClickThresholdMs = 300;
     private readonly ObservableCollection<WatchEntry> _watchEntries = new();
     private readonly BulkObservableCollection<ScanResultRow> _scanResults = new();
     private readonly List<ScanResultRow> _allScanResults = new();
@@ -47,6 +49,9 @@ public partial class MainWindow : Window
     private bool _watchInvalidStateApplied;
     private Point _watchDragStartPoint;
     private WatchEntry? _watchDragSourceEntry;
+    private DateTime _lastScanResultClickUtc;
+    private ScanResultRow? _lastScanResultClickedRow;
+    private bool _allowScanResultDoubleClickAction;
     private static readonly IReadOnlyList<ScanComparisonOption> _scanComparisonsInitial = BuildScanComparisonOptions(includeUnknownInitial: true);
     private static readonly IReadOnlyList<ScanComparisonOption> _scanComparisonsAfterFirst = BuildScanComparisonOptions(includeUnknownInitial: false);
 
@@ -130,6 +135,12 @@ public partial class MainWindow : Window
             _watchEntries.Remove(entry);
             _watchInvalidStateApplied = false;
         }
+    }
+
+    private void CopyWatchListFormat_OnClick(object sender, RoutedEventArgs e)
+    {
+        var exportText = BuildWatchEntryCopyText();
+        ShowCopyWatchListDialog(exportText);
     }
 
     private void WatchGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
@@ -997,7 +1008,28 @@ public partial class MainWindow : Window
     }
     private void ScanResultGrid_OnPreviewMouseLeftButtonDown(object sender, MouseButtonEventArgs e)
     {
-        if (_isScanRunning || e.ClickCount > 1)
+        if (_isScanRunning)
+        {
+            return;
+        }
+
+        var source = e.OriginalSource as DependencyObject;
+        var row = FindVisualParent<DataGridRow>(source);
+        if (row?.Item is not ScanResultRow clickedRow)
+        {
+            _allowScanResultDoubleClickAction = false;
+            return;
+        }
+
+        var nowUtc = DateTime.UtcNow;
+        var deltaMs = (nowUtc - _lastScanResultClickUtc).TotalMilliseconds;
+        _allowScanResultDoubleClickAction = ReferenceEquals(_lastScanResultClickedRow, clickedRow)
+            && deltaMs >= 0
+            && deltaMs <= ScanResultQuickDoubleClickThresholdMs;
+        _lastScanResultClickUtc = nowUtc;
+        _lastScanResultClickedRow = clickedRow;
+
+        if (e.ClickCount > 1)
         {
             return;
         }
@@ -1007,19 +1039,20 @@ public partial class MainWindow : Window
             return;
         }
 
-        var source = e.OriginalSource as DependencyObject;
-        var row = FindVisualParent<DataGridRow>(source);
-        if (row?.Item is null)
+        row.IsSelected = !row.IsSelected;
+        e.Handled = true;
+    }
+
+    private void ScanResultGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
+    {
+        if (!_allowScanResultDoubleClickAction)
         {
             return;
         }
 
-        row.IsSelected = !row.IsSelected;
-        e.Handled = true;
-    }
-    private void ScanResultGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
-    {
+        _allowScanResultDoubleClickAction = false;
         TakeSelectedScanResult_OnClick(sender, e);
+        e.Handled = true;
     }
 
     private void UpdateTakeSelectedButtonState()
@@ -1029,12 +1062,12 @@ public partial class MainWindow : Window
             return;
         }
 
-        TakeSelectedScanResultButton.IsEnabled = !_isScanRunning && ScanResultGrid.SelectedItems.Count > 1;
+        TakeSelectedScanResultButton.IsEnabled = !_isScanRunning && ScanResultGrid.SelectedItems.Count >= 1;
     }
     private void TakeSelectedScanResult_OnClick(object sender, RoutedEventArgs e)
     {
         var selected = ScanResultGrid.SelectedItems.OfType<ScanResultRow>().ToList();
-        if (selected.Count <= 1)
+        if (selected.Count == 0)
         {
             return;
         }
@@ -1088,6 +1121,117 @@ public partial class MainWindow : Window
 
         OpenPointerScannerWithAddress(resolvedAddress, selected.DataType);
         await Task.CompletedTask;
+    }
+    private void RepairPointerBaseFromWatch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (WatchGrid.SelectedItem is not WatchEntry selected)
+        {
+            return;
+        }
+
+        if (!TryCreatePointerRepairSeed(selected, out var currentBaseAddress, out var offsets, out var pointerSizeHint))
+        {
+            MessageBox.Show(this,
+                "Pointer base repair is available for pointer entries (base + optional offsets).",
+                "Not Supported",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new PointerBaseRepairWindow(
+            _memoryAccessor,
+            currentBaseAddress,
+            offsets,
+            pointerSizeHint,
+            selected.DataType,
+            selected.LastValueText)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true || !dialog.SelectedBaseAddress.HasValue)
+        {
+            return;
+        }
+
+        ApplyPointerRepairResult(
+            selected,
+            dialog.SelectedBaseAddress.Value,
+            offsets,
+            dialog.SelectedPointerSizeBytes > 0 ? dialog.SelectedPointerSizeBytes : pointerSizeHint,
+            dialog.SelectedDataType);
+    }
+
+    private bool TryCreatePointerRepairSeed(WatchEntry entry, out ulong baseAddress, out int[] offsets, out int pointerSizeHint)
+    {
+        baseAddress = 0;
+        offsets = Array.Empty<int>();
+        pointerSizeHint = 0;
+
+        if (entry.Kind == WatchEntryKind.PointerChain)
+        {
+            baseAddress = entry.PointerBaseAddress;
+            offsets = entry.Offsets?.ToArray() ?? Array.Empty<int>();
+            pointerSizeHint = entry.PointerSizeBytes;
+            return true;
+        }
+
+        if (entry.Kind == WatchEntryKind.DirectAddress &&
+            (!string.IsNullOrWhiteSpace(entry.PointerBaseModuleName) || entry.IsProcessBaseDisplay))
+        {
+            baseAddress = entry.DirectAddress;
+            offsets = Array.Empty<int>();
+            pointerSizeHint = entry.PointerSizeBytes;
+            return true;
+        }
+
+        return false;
+    }
+
+    private void ApplyPointerRepairResult(
+        WatchEntry targetEntry,
+        ulong repairedBaseAddress,
+        IReadOnlyList<int> offsets,
+        int pointerSizeBytes,
+        MemoryDataType selectedType)
+    {
+        targetEntry.Kind = WatchEntryKind.PointerChain;
+        targetEntry.PointerBaseAddress = repairedBaseAddress;
+        targetEntry.Offsets = new ObservableCollection<int>(offsets);
+        targetEntry.DataType = selectedType;
+
+        if (pointerSizeBytes == 4 || pointerSizeBytes == 8)
+        {
+            targetEntry.PointerSizeBytes = pointerSizeBytes;
+        }
+
+        UpdatePointerBaseModuleReference(targetEntry, repairedBaseAddress);
+
+        targetEntry.Status = "Unknown";
+        UpdateWatchDisplayForCurrentState(targetEntry);
+        WatchGrid.Items.Refresh();
+        RefreshWatchValues();
+    }
+
+    private void UpdatePointerBaseModuleReference(WatchEntry entry, ulong pointerBaseAddress)
+    {
+        var module = _memoryAccessor.Modules.FirstOrDefault(m => m.Contains(pointerBaseAddress));
+        if (module is null)
+        {
+            entry.PointerBaseModuleName = string.Empty;
+            entry.PointerBaseModuleOffset = 0;
+            return;
+        }
+
+        entry.PointerBaseModuleName = module.Name;
+        entry.PointerBaseModuleOffset = pointerBaseAddress - module.Base;
     }
 
     private void OpenPointerScanner_OnClick(object sender, RoutedEventArgs e)
@@ -1934,6 +2078,139 @@ public partial class MainWindow : Window
         };
     }
 
+    private string BuildWatchEntryCopyText()
+    {
+        var builder = new StringBuilder();
+        foreach (var entry in _watchEntries)
+        {
+            var name = string.IsNullOrWhiteSpace(entry.Name) ? "Entry" : entry.Name.Trim();
+            var addressPart = BuildWatchEntryAddressForCopy(entry);
+            builder.Append(name);
+            builder.Append('=');
+            builder.Append(addressPart);
+            builder.AppendLine();
+        }
+
+        return builder.ToString().TrimEnd();
+    }
+
+    private static string BuildWatchEntryAddressForCopy(WatchEntry entry)
+    {
+        var hasModuleBase = !string.IsNullOrWhiteSpace(entry.PointerBaseModuleName);
+        var baseValue = entry.Kind == WatchEntryKind.DirectAddress
+            ? (hasModuleBase ? entry.PointerBaseModuleOffset : entry.DirectAddress)
+            : (hasModuleBase ? entry.PointerBaseModuleOffset : entry.PointerBaseAddress);
+
+        var baseText = baseValue.ToString("X");
+        if (entry.Kind != WatchEntryKind.PointerChain || entry.Offsets is not { Count: > 0 })
+        {
+            return baseText;
+        }
+
+        var offsets = entry.Offsets.Select(FormatSignedOffsetHex);
+        return $"{baseText},{string.Join(",", offsets)}";
+    }
+
+    private static string FormatSignedOffsetHex(int offset)
+    {
+        if (offset >= 0)
+        {
+            return offset.ToString("X");
+        }
+
+        var abs = Math.Abs((long)offset);
+        return $"-{abs:X}";
+    }
+
+    private void ShowCopyWatchListDialog(string content)
+    {
+        var window = new Window
+        {
+            Title = "Copy Watch Entries",
+            Width = 680,
+            Height = 460,
+            MinWidth = 520,
+            MinHeight = 340,
+            WindowStartupLocation = WindowStartupLocation.CenterOwner,
+            Owner = this
+        };
+
+        var root = new Grid { Margin = new Thickness(10) };
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+        root.RowDefinitions.Add(new RowDefinition { Height = new GridLength(1, GridUnitType.Star) });
+        root.RowDefinitions.Add(new RowDefinition { Height = GridLength.Auto });
+
+        var text = new TextBlock
+        {
+            Text = "Format: NAME=BASE[,OFFSET...]. Process name is omitted.",
+            Margin = new Thickness(0, 0, 0, 8)
+        };
+        Grid.SetRow(text, 0);
+        root.Children.Add(text);
+
+        var textBox = new TextBox
+        {
+            Text = content,
+            IsReadOnly = true,
+            AcceptsReturn = true,
+            AcceptsTab = true,
+            VerticalScrollBarVisibility = ScrollBarVisibility.Auto,
+            HorizontalScrollBarVisibility = ScrollBarVisibility.Auto,
+            TextWrapping = TextWrapping.NoWrap
+        };
+        Grid.SetRow(textBox, 1);
+        root.Children.Add(textBox);
+
+        var buttonRow = new StackPanel
+        {
+            Orientation = Orientation.Horizontal,
+            HorizontalAlignment = HorizontalAlignment.Right,
+            Margin = new Thickness(0, 10, 0, 0)
+        };
+
+        var copyButton = new Button
+        {
+            Content = "Copy All",
+            Width = 100,
+            Height = 30,
+            Margin = new Thickness(0, 0, 8, 0),
+            IsDefault = true
+        };
+
+        var closeButton = new Button
+        {
+            Content = "Close",
+            Width = 100,
+            Height = 30,
+            IsCancel = true
+        };
+
+        copyButton.Click += (_, _) =>
+        {
+            try
+            {
+                Clipboard.SetText(textBox.Text ?? string.Empty);
+                textBox.Focus();
+                textBox.SelectAll();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(window, ex.Message, "Clipboard Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            }
+        };
+
+        closeButton.Click += (_, _) => window.Close();
+
+        buttonRow.Children.Add(copyButton);
+        buttonRow.Children.Add(closeButton);
+
+        Grid.SetRow(buttonRow, 2);
+        root.Children.Add(buttonRow);
+
+        window.Content = root;
+        window.ShowDialog();
+    }
+
     private static bool IsOnlyCancellation(AggregateException ex)
     {
         return ex.Flatten().InnerExceptions.All(inner => inner is OperationCanceledException);
@@ -2114,6 +2391,7 @@ public partial class MainWindow : Window
     {
         _scanCts?.Cancel();
         _scanCts?.Dispose();
+        _scanService.Dispose();
         UiUpdateRoutineSettings.ValueRefreshIntervalChanged -= OnGlobalValueRefreshIntervalChanged;
         _refreshTimer.Stop();
         _scanResultRefreshTimer.Stop();
@@ -2270,6 +2548,12 @@ public partial class MainWindow : Window
         }
     }
 }
+
+
+
+
+
+
 
 
 
