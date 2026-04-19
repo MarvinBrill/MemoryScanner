@@ -375,6 +375,10 @@ public partial class PointerBaseRepairWindow : Window
             MemoryDataType.Int64 => Convert.ToInt64(currentValue) == Convert.ToInt64(expectedValue),
             MemoryDataType.Float => Math.Abs(Convert.ToSingle(currentValue) - Convert.ToSingle(expectedValue)) <= 0.0001f,
             MemoryDataType.Double => Math.Abs(Convert.ToDouble(currentValue) - Convert.ToDouble(expectedValue)) <= 0.0000001d,
+            MemoryDataType.String => string.Equals(
+                Convert.ToString(currentValue, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                Convert.ToString(expectedValue, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty,
+                StringComparison.Ordinal),
             _ => Equals(currentValue, expectedValue)
         };
     }

@@ -619,6 +619,7 @@ public partial class WriteAccessTracerWindow : Window
         MemoryDataType.Int64 => sizeof(long),
         MemoryDataType.Float => sizeof(float),
         MemoryDataType.Double => sizeof(double),
+        MemoryDataType.String => 64,
         _ => sizeof(int)
     };
 
@@ -639,6 +640,7 @@ public partial class WriteAccessTracerWindow : Window
                 MemoryDataType.Int64 when bytes.Length >= 8 => BitConverter.ToInt64(bytes, 0).ToString(CultureInfo.InvariantCulture),
                 MemoryDataType.Float when bytes.Length >= 4 => BitConverter.ToSingle(bytes, 0).ToString("0.######", CultureInfo.InvariantCulture),
                 MemoryDataType.Double when bytes.Length >= 8 => BitConverter.ToDouble(bytes, 0).ToString("0.######", CultureInfo.InvariantCulture),
+                MemoryDataType.String => DecodeUtf8(bytes),
                 _ => BitConverter.ToString(bytes)
             };
         }
@@ -646,6 +648,22 @@ public partial class WriteAccessTracerWindow : Window
         {
             return BitConverter.ToString(bytes);
         }
+    }
+
+    private static string DecodeUtf8(byte[] bytes)
+    {
+        var terminator = Array.IndexOf(bytes, (byte)0);
+        if (terminator < 0)
+        {
+            terminator = bytes.Length;
+        }
+
+        if (terminator == 0)
+        {
+            return string.Empty;
+        }
+
+        return System.Text.Encoding.UTF8.GetString(bytes, 0, terminator);
     }
 
     private static string FormatOffset(int offset)

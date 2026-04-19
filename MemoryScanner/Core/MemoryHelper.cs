@@ -151,6 +151,24 @@ public class MemoryHelper64
         return bytesRead > 0;
     }
 
+    public bool TryWriteMemoryBytes(ulong memoryAddress, byte[] buffer, int count, out int bytesWritten)
+    {
+        bytesWritten = 0;
+        if (buffer.Length == 0 || count <= 0)
+        {
+            return false;
+        }
+
+        if (count > buffer.Length)
+        {
+            count = buffer.Length;
+        }
+
+        var ok = WriteProcessMemory(process.Handle, memoryAddress, buffer, count, out var bytesWrittenPtr);
+        bytesWritten = bytesWrittenPtr.ToInt32();
+        return ok && bytesWritten > 0;
+    }
+
     public T ReadMemory<T>(ulong MemoryAddress)
     {
         byte[] data = ReadMemoryBytes(MemoryAddress, Marshal.SizeOf(typeof(T)));

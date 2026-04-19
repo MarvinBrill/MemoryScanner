@@ -52,8 +52,6 @@ public partial class MainWindow : Window
     private DateTime _lastScanResultClickUtc;
     private ScanResultRow? _lastScanResultClickedRow;
     private bool _allowScanResultDoubleClickAction;
-    private static readonly IReadOnlyList<ScanComparisonOption> _scanComparisonsInitial = BuildScanComparisonOptions(includeUnknownInitial: true);
-    private static readonly IReadOnlyList<ScanComparisonOption> _scanComparisonsAfterFirst = BuildScanComparisonOptions(includeUnknownInitial: false);
 
     public MainWindow()
     {
@@ -748,7 +746,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        if (_memoryAccessor.TryReadValue(row.Address, row.DataType, out var value))
+        if (_memoryAccessor.TryReadValue(row.Address, row.DataType, out var value, row.StringByteLength))
         {
             row.ValueText = FormatValue(value);
         }
@@ -763,18 +761,39 @@ public partial class MainWindow : Window
         UpdateScanComparisonInputUi();
     }
 
-    private static IReadOnlyList<ScanComparisonOption> BuildScanComparisonOptions(bool includeUnknownInitial)
+    private void ScanTypeBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        var values = Enum.GetValues<ScanComparison>();
-        var list = new List<ScanComparisonOption>(values.Length);
-        foreach (var value in values)
-        {
-            if (!includeUnknownInitial && value == ScanComparison.UnknownInitial)
-            {
-                continue;
-            }
+        UpdateScanComparisonChoices();
+    }
 
-            list.Add(new ScanComparisonOption(value, FormatScanComparisonLabel(value)));
+    private static IReadOnlyList<ScanComparisonOption> BuildScanComparisonOptions(
+        bool includeUnknownInitial,
+        bool includeRelativeComparisons,
+        bool includeRangeComparisons)
+    {
+        var list = new List<ScanComparisonOption>();
+
+        if (includeUnknownInitial)
+        {
+            list.Add(new ScanComparisonOption(ScanComparison.UnknownInitial, FormatScanComparisonLabel(ScanComparison.UnknownInitial)));
+        }
+
+        list.Add(new ScanComparisonOption(ScanComparison.Equal, FormatScanComparisonLabel(ScanComparison.Equal)));
+        list.Add(new ScanComparisonOption(ScanComparison.NotEqual, FormatScanComparisonLabel(ScanComparison.NotEqual)));
+
+        if (includeRangeComparisons)
+        {
+            list.Add(new ScanComparisonOption(ScanComparison.Greater, FormatScanComparisonLabel(ScanComparison.Greater)));
+            list.Add(new ScanComparisonOption(ScanComparison.Less, FormatScanComparisonLabel(ScanComparison.Less)));
+            list.Add(new ScanComparisonOption(ScanComparison.Between, FormatScanComparisonLabel(ScanComparison.Between)));
+        }
+
+        if (includeRelativeComparisons)
+        {
+            list.Add(new ScanComparisonOption(ScanComparison.Increased, FormatScanComparisonLabel(ScanComparison.Increased)));
+            list.Add(new ScanComparisonOption(ScanComparison.Decreased, FormatScanComparisonLabel(ScanComparison.Decreased)));
+            list.Add(new ScanComparisonOption(ScanComparison.Changed, FormatScanComparisonLabel(ScanComparison.Changed)));
+            list.Add(new ScanComparisonOption(ScanComparison.Unchanged, FormatScanComparisonLabel(ScanComparison.Unchanged)));
         }
 
         return list;
@@ -799,13 +818,19 @@ public partial class MainWindow : Window
         }
 
         var previous = (ScanComparisonBox.SelectedItem as ScanComparisonOption)?.Value;
-        var options = _hasCompletedFirstScan ? _scanComparisonsAfterFirst : _scanComparisonsInitial;
+        var selectedType = ScanTypeBox?.SelectedItem as MemoryDataType? ?? MemoryDataType.Int32;
+
+        IReadOnlyList<ScanComparisonOption> options = selectedType == MemoryDataType.String
+            ? BuildScanComparisonOptions(includeUnknownInitial: false, includeRelativeComparisons: false, includeRangeComparisons: false)
+            : (_hasCompletedFirstScan
+                ? BuildScanComparisonOptions(includeUnknownInitial: false, includeRelativeComparisons: true, includeRangeComparisons: true)
+                : BuildScanComparisonOptions(includeUnknownInitial: true, includeRelativeComparisons: false, includeRangeComparisons: true));
 
         ScanComparisonBox.ItemsSource = options;
 
-        if (_hasCompletedFirstScan && previous == ScanComparison.UnknownInitial)
+        if (previous.HasValue && !options.Any(x => x.Value == previous.Value))
         {
-            previous = ScanComparison.Changed;
+            previous = null;
         }
 
         var selected = previous.HasValue
@@ -833,13 +858,16 @@ public partial class MainWindow : Window
         }
 
         var comparison = option.Value;
-        var requiresInput = comparison is ScanComparison.Equal
-            or ScanComparison.NotEqual
-            or ScanComparison.Greater
-            or ScanComparison.Less
-            or ScanComparison.Between;
+        var selectedType = ScanTypeBox.SelectedItem as MemoryDataType? ?? MemoryDataType.Int32;
+        var requiresInput = selectedType == MemoryDataType.String
+            ? comparison is ScanComparison.Equal or ScanComparison.NotEqual
+            : comparison is ScanComparison.Equal
+                or ScanComparison.NotEqual
+                or ScanComparison.Greater
+                or ScanComparison.Less
+                or ScanComparison.Between;
 
-        var showRange = comparison == ScanComparison.Between;
+        var showRange = selectedType != MemoryDataType.String && comparison == ScanComparison.Between;
 
         ScanValueLabelText.Text = showRange ? "Range From" : "Value";
         ScanValueText.IsEnabled = requiresInput;
@@ -1983,8 +2011,10 @@ public partial class MainWindow : Window
     {
         dataType = MemoryDataType.Int32;
         comparison = ScanComparison.Equal;
-        valueText = ScanValueText.Text.Trim();
-        valueTextTo = ScanValueToText.Text.Trim();
+        var rawValueText = ScanValueText.Text;
+        var rawValueTextTo = ScanValueToText.Text;
+        valueText = rawValueText.Trim();
+        valueTextTo = rawValueTextTo.Trim();
 
         if (ScanTypeBox.SelectedItem is not MemoryDataType selectedType)
         {
@@ -2000,6 +2030,18 @@ public partial class MainWindow : Window
 
         dataType = selectedType;
         comparison = selectedComparison.Value;
+
+        if (dataType == MemoryDataType.String)
+        {
+            valueText = rawValueText;
+            valueTextTo = rawValueTextTo;
+
+            if (comparison is not (ScanComparison.Equal or ScanComparison.NotEqual))
+            {
+                MessageBox.Show(this, "String scans currently support only Equal and Not Equal.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
 
         if (comparison == ScanComparison.UnknownInitial)
         {
@@ -2430,6 +2472,7 @@ public partial class MainWindow : Window
             _displayContext = displayContext;
             Address = result.Address;
             DataType = result.DataType;
+            StringByteLength = result.StringByteLength;
             _valueText = result.ValueText;
         }
 
@@ -2462,6 +2505,7 @@ public partial class MainWindow : Window
             }
         }
         public MemoryDataType DataType { get; }
+        public int StringByteLength { get; }
 
         public event PropertyChangedEventHandler? PropertyChanged;
 

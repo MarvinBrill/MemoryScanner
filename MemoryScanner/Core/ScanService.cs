@@ -2,6 +2,7 @@
 using System.Buffers.Binary;
 using System.Diagnostics;
 using System.IO;
+using System.Text;
 using System.Threading.Tasks;
 
 namespace MemoryScanner.Core;
@@ -62,7 +63,17 @@ public sealed class ScanService : IDisposable
         ClearCandidateSnapshot();
         var results = new List<ScanResult>();
         if (!_memory.IsAttached) return results;
-        if (!IsFirstScanComparisonSupported(comparison)) return results;
+        if (dataType == MemoryDataType.String)
+        {
+            if (!IsStringFirstScanComparisonSupported(comparison))
+            {
+                return results;
+            }
+        }
+        else if (!IsFirstScanComparisonSupported(comparison))
+        {
+            return results;
+        }
 
         object? input = null;
         object? inputUpper = null;
@@ -77,14 +88,41 @@ public sealed class ScanService : IDisposable
         }
 
         var includeResultRows = comparison != ScanComparison.UnknownInitial;
-        if (!TryCreateFirstScanMatcher(dataType, comparison, input, inputUpper, out var firstMatcher))
+        ResolveDepth(executionOptions.DepthProfile, out var includePrivate, out var includeImage, out var scanUnaligned, out var stepMultiplier);
+
+        var typeSize = 0;
+        var stepSize = 1;
+        FirstScanMatcher? firstMatcher = null;
+        byte[]? stringInputBytes = null;
+
+        if (dataType == MemoryDataType.String)
         {
-            return results;
+            stringInputBytes = Encoding.UTF8.GetBytes(Convert.ToString(input, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty);
+            if (stringInputBytes.Length == 0)
+            {
+                return results;
+            }
+
+            typeSize = stringInputBytes.Length;
+            stepSize = 1;
+            firstMatcher = BuildStringFirstScanMatcher(comparison, stringInputBytes);
+            if (firstMatcher is null)
+            {
+                return results;
+            }
+        }
+        else
+        {
+            if (!TryCreateFirstScanMatcher(dataType, comparison, input, inputUpper, out var numericMatcher))
+            {
+                return results;
+            }
+
+            firstMatcher = numericMatcher;
+            typeSize = GetTypeSize(dataType);
+            stepSize = scanUnaligned ? 1 : Math.Max(1, typeSize * stepMultiplier);
         }
 
-        ResolveDepth(executionOptions.DepthProfile, out var includePrivate, out var includeImage, out var scanUnaligned, out var stepMultiplier);
-        var typeSize = GetTypeSize(dataType);
-        var stepSize = scanUnaligned ? 1 : Math.Max(1, typeSize * stepMultiplier);
         var effectiveLimit = executionOptions.NormalizedResultLimit();
         var hasLimit = executionOptions.UseResultLimit;
 
@@ -104,6 +142,7 @@ public sealed class ScanService : IDisposable
         {
             MaxDegreeOfParallelism = executionOptions.NormalizedThreadCount()
         };
+        var matcher = firstMatcher!;
 
         try
         {
@@ -160,13 +199,20 @@ public sealed class ScanService : IDisposable
                             TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, totalSteps, "Scanning memory");
                         }
 
-                        if (!firstMatcher(span, pos, out var value))
+                        if (!matcher(span, pos, out var value))
                         {
                             continue;
                         }
 
                         ulong address = cursor + (ulong)pos;
-                        local.AddMatch(address, value, dataType, includeResultRows);
+                        if (dataType == MemoryDataType.String && stringInputBytes is not null)
+                        {
+                            local.AddMatch(address, value, dataType, includeResultRows, stringInputBytes.Length);
+                        }
+                        else
+                        {
+                            local.AddMatch(address, value, dataType, includeResultRows);
+                        }
 
                         if (local.Candidates.Count >= CandidateFlushBatchSize)
                         {
@@ -239,7 +285,14 @@ public sealed class ScanService : IDisposable
 
         object? input = null;
         object? inputUpper = null;
-        if (comparison == ScanComparison.UnknownInitial)
+        if (dataType == MemoryDataType.String)
+        {
+            if (!IsStringNextScanComparisonSupported(comparison))
+            {
+                return results;
+            }
+        }
+        else if (comparison == ScanComparison.UnknownInitial)
         {
             return results;
         }
@@ -254,6 +307,21 @@ public sealed class ScanService : IDisposable
         var effectiveLimit = executionOptions.NormalizedResultLimit();
         var hasLimit = executionOptions.UseResultLimit;
         const bool includeResultRows = true;
+
+        if (dataType == MemoryDataType.String)
+        {
+            return NextScanString(
+                sourceSnapshotPath,
+                sourceCandidateCount,
+                comparison,
+                input,
+                effectiveLimit,
+                hasLimit,
+                executionOptions.NormalizedThreadCount(),
+                progress,
+                cancellationToken);
+        }
+
         if (!TryCreateNextScanMatcher(dataType, comparison, input, inputUpper, out var matcher))
         {
             return results;
@@ -294,6 +362,19 @@ public sealed class ScanService : IDisposable
                     if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
                     {
                         loopState.Stop();
+                        return local;
+                    }
+
+                    if (candidate.ValueType != dataType || candidate.ValueType == MemoryDataType.String)
+                    {
+                        local.ProcessedCount++;
+                        if ((local.ProcessedCount & 1023) == 0)
+                        {
+                            var done = Interlocked.Add(ref processed, 1024);
+                            local.ProcessedCount -= 1024;
+                            TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
+                        }
+
                         return local;
                     }
 
@@ -347,6 +428,140 @@ public sealed class ScanService : IDisposable
         return results;
     }
 
+    private IReadOnlyList<ScanResult> NextScanString(
+        string sourceSnapshotPath,
+        int sourceCandidateCount,
+        ScanComparison comparison,
+        object? input,
+        int effectiveLimit,
+        bool hasLimit,
+        int maxDegreeOfParallelism,
+        IProgress<ScanProgressInfo>? progress,
+        CancellationToken cancellationToken)
+    {
+        var results = new List<ScanResult>();
+
+        if (!File.Exists(sourceSnapshotPath))
+        {
+            ClearCandidateSnapshot();
+            return results;
+        }
+
+        var inputText = Convert.ToString(input, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty;
+        var inputBytes = Encoding.UTF8.GetBytes(inputText);
+        if (inputBytes.Length == 0)
+        {
+            return results;
+        }
+
+        var total = Math.Max(1, sourceCandidateCount);
+        ReportProgress(progress, 0, total, "Filtering previous results");
+
+        var gate = new object();
+        int limitReached = 0;
+        long processed = 0;
+        var progressGate = new object();
+        long lastProgressTicks = 0;
+        using var filteredSnapshotWriter = CandidateSnapshotWriter.Create();
+
+        var parallelOptions = new ParallelOptions
+        {
+            MaxDegreeOfParallelism = maxDegreeOfParallelism
+        };
+
+        try
+        {
+            foreach (var chunk in EnumerateCandidateChunks(sourceSnapshotPath, CandidateChunkSize, cancellationToken))
+            {
+                if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
+                {
+                    break;
+                }
+
+                Parallel.ForEach(chunk, parallelOptions, () => new LocalCollector(), (candidate, loopState, local) =>
+                {
+                    if (cancellationToken.IsCancellationRequested || Volatile.Read(ref limitReached) == 1)
+                    {
+                        loopState.Stop();
+                        return local;
+                    }
+
+                    local.ProcessedCount++;
+                    if ((local.ProcessedCount & 1023) == 0)
+                    {
+                        var done = Interlocked.Add(ref processed, 1024);
+                        local.ProcessedCount -= 1024;
+                        TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
+                    }
+
+                    if (candidate.ValueType != MemoryDataType.String)
+                    {
+                        return local;
+                    }
+
+                    var byteLength = NormalizeStringCandidateByteLength(candidate.RawValue);
+                    if (byteLength <= 0)
+                    {
+                        return local;
+                    }
+
+                    if (!_memory.TryReadBytes(candidate.Address, byteLength, out var currentBytes) || currentBytes.Length < byteLength)
+                    {
+                        return local;
+                    }
+
+                    var isEqual = currentBytes.AsSpan(0, byteLength).SequenceEqual(inputBytes);
+                    var keep = comparison switch
+                    {
+                        ScanComparison.Equal => isEqual,
+                        ScanComparison.NotEqual => !isEqual,
+                        _ => false
+                    };
+
+                    if (!keep)
+                    {
+                        return local;
+                    }
+
+                    var text = DecodeUtf8String(currentBytes.AsSpan(0, byteLength));
+                    local.AddMatch(candidate.Address, text, MemoryDataType.String, includeResults: true, stringByteLength: byteLength);
+
+                    if (local.Candidates.Count >= CandidateFlushBatchSize)
+                    {
+                        FlushLocal(local, results, filteredSnapshotWriter, hasLimit, effectiveLimit, ref limitReached, gate, includeResults: true);
+                        if (Volatile.Read(ref limitReached) == 1)
+                        {
+                            loopState.Stop();
+                        }
+                    }
+
+                    return local;
+                }, local =>
+                {
+                    FlushLocal(local, results, filteredSnapshotWriter, hasLimit, effectiveLimit, ref limitReached, gate, includeResults: true);
+                    if (local.ProcessedCount > 0)
+                    {
+                        var done = Interlocked.Add(ref processed, local.ProcessedCount);
+                        TryReportProgressThrottled(progress, progressGate, ref lastProgressTicks, done, total, "Filtering previous results");
+                    }
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (AggregateException ex) when (ex.Flatten().InnerExceptions.All(inner => inner is OperationCanceledException))
+        {
+        }
+
+        var filteredCommit = filteredSnapshotWriter.Commit();
+        SetCandidateSnapshot(filteredCommit.FilePath, filteredCommit.Count);
+
+        var finalStatus = cancellationToken.IsCancellationRequested ? "Scan canceled" : "Scan finished";
+        ReportProgress(progress, Math.Min(processed, total), total, finalStatus);
+        return results;
+    }
+
     public void Reset()
     {
         ClearCandidateSnapshot();
@@ -368,6 +583,17 @@ public sealed class ScanService : IDisposable
     public static bool TryParseValue(MemoryDataType dataType, string? text, out object value)
     {
         value = 0;
+        if (dataType == MemoryDataType.String)
+        {
+            if (text is null)
+            {
+                return false;
+            }
+
+            value = text;
+            return text.Length > 0;
+        }
+
         if (string.IsNullOrWhiteSpace(text)) return false;
         var trimmed = text.Trim();
 
@@ -379,6 +605,7 @@ public sealed class ScanService : IDisposable
             MemoryDataType.Int64 => long.TryParse(trimmed, out var l) ? Assign(l, out value) : false,
             MemoryDataType.Float => float.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) ? Assign(f, out value) : false,
             MemoryDataType.Double => double.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? Assign(d, out value) : false,
+            MemoryDataType.String => false,
             _ => false
         };
     }
@@ -506,6 +733,7 @@ public sealed class ScanService : IDisposable
             MemoryDataType.Int64 => unchecked((ulong)Convert.ToInt64(value)),
             MemoryDataType.Float => unchecked((ulong)(uint)BitConverter.SingleToInt32Bits(Convert.ToSingle(value))),
             MemoryDataType.Double => unchecked((ulong)BitConverter.DoubleToInt64Bits(Convert.ToDouble(value))),
+            MemoryDataType.String => unchecked((ulong)Encoding.UTF8.GetByteCount(Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty)),
             _ => 0UL
         };
     }
@@ -520,6 +748,7 @@ public sealed class ScanService : IDisposable
             MemoryDataType.Int64 => unchecked((long)candidate.RawValue),
             MemoryDataType.Float => BitConverter.Int32BitsToSingle(unchecked((int)(candidate.RawValue & 0xFFFFFFFF))),
             MemoryDataType.Double => BitConverter.Int64BitsToDouble(unchecked((long)candidate.RawValue)),
+            MemoryDataType.String => string.Empty,
             _ => 0
         };
     }
@@ -576,6 +805,79 @@ public sealed class ScanService : IDisposable
 
         local.Results.Clear();
         local.Candidates.Clear();
+    }
+
+    private static FirstScanMatcher? BuildStringFirstScanMatcher(ScanComparison comparison, byte[] inputBytes)
+    {
+        if (inputBytes.Length == 0)
+        {
+            return null;
+        }
+
+        return comparison switch
+        {
+            ScanComparison.Equal => (ReadOnlySpan<byte> span, int offset, out object value) =>
+            {
+                var current = span.Slice(offset, inputBytes.Length);
+                if (!current.SequenceEqual(inputBytes))
+                {
+                    value = string.Empty;
+                    return false;
+                }
+
+                value = DecodeUtf8String(current);
+                return true;
+            },
+            ScanComparison.NotEqual => (ReadOnlySpan<byte> span, int offset, out object value) =>
+            {
+                var current = span.Slice(offset, inputBytes.Length);
+                if (current.SequenceEqual(inputBytes))
+                {
+                    value = string.Empty;
+                    return false;
+                }
+
+                value = DecodeUtf8String(current);
+                return true;
+            },
+            _ => null
+        };
+    }
+
+    private static bool IsStringFirstScanComparisonSupported(ScanComparison comparison)
+    {
+        return comparison is ScanComparison.Equal or ScanComparison.NotEqual;
+    }
+
+    private static bool IsStringNextScanComparisonSupported(ScanComparison comparison)
+    {
+        return comparison is ScanComparison.Equal or ScanComparison.NotEqual;
+    }
+
+    private static int NormalizeStringCandidateByteLength(ulong rawValue)
+    {
+        if (rawValue == 0)
+        {
+            return 0;
+        }
+
+        var clamped = Math.Clamp(rawValue, 1UL, 4096UL);
+        return (int)clamped;
+    }
+
+    private static string DecodeUtf8String(ReadOnlySpan<byte> bytes)
+    {
+        var terminatorIndex = bytes.IndexOf((byte)0);
+        var content = terminatorIndex >= 0
+            ? bytes[..terminatorIndex]
+            : bytes;
+
+        if (content.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        return Encoding.UTF8.GetString(content);
     }
 
     private static bool TryCreateFirstScanMatcher(
@@ -1026,6 +1328,7 @@ public sealed class ScanService : IDisposable
         MemoryDataType.Int64 => sizeof(long),
         MemoryDataType.Float => sizeof(float),
         MemoryDataType.Double => sizeof(double),
+        MemoryDataType.String => sizeof(byte),
         _ => sizeof(int)
     };
 
@@ -1070,7 +1373,7 @@ public sealed class ScanService : IDisposable
         public List<ScanCandidate> Candidates { get; } = new(CandidateFlushBatchSize);
         public long ProcessedCount { get; set; }
 
-        public void AddMatch(ulong address, object value, MemoryDataType type, bool includeResults)
+        public void AddMatch(ulong address, object value, MemoryDataType type, bool includeResults, int stringByteLength = 0)
         {
             if (includeResults)
             {
@@ -1078,11 +1381,16 @@ public sealed class ScanService : IDisposable
                 {
                     Address = address,
                     DataType = type,
+                    StringByteLength = type == MemoryDataType.String ? Math.Max(1, stringByteLength) : 0,
                     ValueText = FormatValue(value)
                 });
             }
 
-            Candidates.Add(new ScanCandidate(address, PackCandidateValue(value, type), type));
+            var candidateRawValue = type == MemoryDataType.String
+                ? (ulong)Math.Max(1, stringByteLength)
+                : PackCandidateValue(value, type);
+
+            Candidates.Add(new ScanCandidate(address, candidateRawValue, type));
         }
     }
 

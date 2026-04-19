@@ -458,6 +458,12 @@ public partial class PointerScanWindow : Window
                 result = leftDouble.CompareTo(rightDouble);
                 return true;
 
+            case MemoryDataType.String:
+                result = string.CompareOrdinal(
+                    Convert.ToString(left, CultureInfo.InvariantCulture) ?? string.Empty,
+                    Convert.ToString(right, CultureInfo.InvariantCulture) ?? string.Empty);
+                return true;
+
             default:
                 return false;
         }

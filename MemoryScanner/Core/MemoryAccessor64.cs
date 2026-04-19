@@ -1,6 +1,7 @@
 using MemoryScanner.Models;
 using System.Diagnostics;
 using System.Runtime.InteropServices;
+using System.Text;
 
 namespace MemoryScanner.Core;
 
@@ -13,14 +14,18 @@ public interface IMemoryAccessor
     void Detach();
     bool TryReadBytes(ulong address, int count, out byte[] data);
     bool TryReadBytes(ulong address, byte[] buffer, int count, out int bytesRead);
-    bool TryReadValue(ulong address, MemoryDataType dataType, out object value);
-    bool TryWriteValue(ulong address, MemoryDataType dataType, object value);
+    bool TryReadValue(ulong address, MemoryDataType dataType, out object value, int stringByteLength = 0);
+    bool TryWriteValue(ulong address, MemoryDataType dataType, object value, int stringByteLength = 0);
     bool TryResolveWatchAddress(WatchEntry entry, out ulong finalAddress, out string displayAddress);
     string FormatAddress(ulong address);
 }
 
 public sealed class MemoryAccessor64 : IMemoryAccessor
 {
+    private const int DefaultStringByteLength = 64;
+    private const int MinStringByteLength = 1;
+    private const int MaxStringByteLength = 4096;
+
     private MemoryHelper64? _helper;
     private Process? _process;
     private List<ModuleRange> _modules = new();
@@ -117,13 +122,18 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
             return false;
         }
     }
-    public bool TryReadValue(ulong address, MemoryDataType dataType, out object value)
+    public bool TryReadValue(ulong address, MemoryDataType dataType, out object value, int stringByteLength = 0)
     {
         value = 0;
         if (_helper is null) return false;
 
         try
         {
+            if (dataType == MemoryDataType.String)
+            {
+                return TryReadStringValue(address, stringByteLength, out value);
+            }
+
             value = dataType switch
             {
                 MemoryDataType.Byte => _helper.ReadMemory<byte>(address),
@@ -142,12 +152,17 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
         }
     }
 
-    public bool TryWriteValue(ulong address, MemoryDataType dataType, object value)
+    public bool TryWriteValue(ulong address, MemoryDataType dataType, object value, int stringByteLength = 0)
     {
         if (_helper is null) return false;
 
         try
         {
+            if (dataType == MemoryDataType.String)
+            {
+                return TryWriteStringValue(address, Convert.ToString(value) ?? string.Empty, stringByteLength);
+            }
+
             return dataType switch
             {
                 MemoryDataType.Byte => _helper.WriteMemory(address, Convert.ToByte(value)),
@@ -289,6 +304,83 @@ public sealed class MemoryAccessor64 : IMemoryAccessor
     private static string FormatOffset(int offset)
     {
         return offset < 0 ? "-0x" + Math.Abs(offset).ToString("X") : "0x" + offset.ToString("X");
+    }
+
+    private bool TryReadStringValue(ulong address, int requestedLength, out object value)
+    {
+        value = string.Empty;
+        if (_helper is null)
+        {
+            return false;
+        }
+
+        var length = NormalizeStringByteLength(requestedLength);
+        var buffer = new byte[length];
+        if (!_helper.TryReadMemoryBytes(address, buffer, length, out var bytesRead) || bytesRead <= 0)
+        {
+            return false;
+        }
+
+        value = DecodeStringBytes(buffer.AsSpan(0, bytesRead));
+        return true;
+    }
+
+    private bool TryWriteStringValue(ulong address, string text, int requestedLength)
+    {
+        if (_helper is null)
+        {
+            return false;
+        }
+
+        var payload = Encoding.UTF8.GetBytes(text);
+        byte[] bytesToWrite;
+
+        if (requestedLength > 0)
+        {
+            var length = NormalizeStringByteLength(requestedLength);
+            bytesToWrite = new byte[length];
+            if (length > 1)
+            {
+                var copyCount = Math.Min(length - 1, payload.Length);
+                Array.Copy(payload, bytesToWrite, copyCount);
+            }
+        }
+        else
+        {
+            bytesToWrite = new byte[payload.Length + 1];
+            if (payload.Length > 0)
+            {
+                Array.Copy(payload, bytesToWrite, payload.Length);
+            }
+        }
+
+        return _helper.TryWriteMemoryBytes(address, bytesToWrite, bytesToWrite.Length, out var bytesWritten)
+            && bytesWritten == bytesToWrite.Length;
+    }
+
+    private static int NormalizeStringByteLength(int requestedLength)
+    {
+        if (requestedLength <= 0)
+        {
+            return DefaultStringByteLength;
+        }
+
+        return Math.Clamp(requestedLength, MinStringByteLength, MaxStringByteLength);
+    }
+
+    private static string DecodeStringBytes(ReadOnlySpan<byte> bytes)
+    {
+        var terminatorIndex = bytes.IndexOf((byte)0);
+        var content = terminatorIndex >= 0
+            ? bytes[..terminatorIndex]
+            : bytes;
+
+        if (content.Length == 0)
+        {
+            return string.Empty;
+        }
+
+        return Encoding.UTF8.GetString(content);
     }
 
     private static List<ModuleRange> LoadModules(Process process)

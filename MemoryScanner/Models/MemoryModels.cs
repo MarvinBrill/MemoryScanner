@@ -12,7 +12,8 @@ public enum MemoryDataType
     Int64,
     Float,
     Double,
-    Int16
+    Int16,
+    String
 }
 
 
@@ -25,7 +26,8 @@ public static class MemoryDataTypeUiOrder
         MemoryDataType.Int32,
         MemoryDataType.Int64,
         MemoryDataType.Float,
-        MemoryDataType.Double
+        MemoryDataType.Double,
+        MemoryDataType.String
     };
 }
 public enum ScanComparison
@@ -145,6 +147,7 @@ public sealed class ScanResult
     public string DisplayAddress { get; set; } = string.Empty;
     public string ValueText { get; set; } = string.Empty;
     public MemoryDataType DataType { get; set; }
+    public int StringByteLength { get; set; }
     public bool IsStatic { get; set; }
 }
 

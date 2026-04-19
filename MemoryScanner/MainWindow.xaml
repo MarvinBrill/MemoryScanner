@@ -191,7 +191,7 @@
 
                         <StackPanel Grid.Column="0" Margin="0,0,8,0">
                             <TextBlock Text="Data Type" Foreground="#FFE6E6E6"/>
-                            <ComboBox x:Name="ScanTypeBox" Margin="0,4,0,0" Height="28"/>
+                            <ComboBox x:Name="ScanTypeBox" Margin="0,4,0,0" Height="28" SelectionChanged="ScanTypeBox_OnSelectionChanged"/>
                         </StackPanel>
 
                         <StackPanel Grid.Column="1" Margin="0,0,8,0">

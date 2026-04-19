@@ -17,10 +17,21 @@ namespace MemoryScanner.Windows;
 public partial class NearbyAddressesWindow : Window
 {
     private const string UnavailableValueText = "???";
+    private const int MinNearbyRefreshBatchSize = 32;
+    private const int MaxNearbyRefreshBatchSize = 512;
     private const int RelativePointerLastOffsetMaxDelta = 0x4000;
     private const int RelativePointerSecondaryOffsetMaxDelta = 0x800;
     private const int RelativePointerSecondaryStep = 4;
     private const int RelativePointerMaxResults = 256;
+    private static readonly IReadOnlyList<ValueFilterConditionOption> _valueFilterOptions = new[]
+    {
+        new ValueFilterConditionOption(ScanComparison.Equal, "Equal"),
+        new ValueFilterConditionOption(ScanComparison.NotEqual, "Not Equal"),
+        new ValueFilterConditionOption(ScanComparison.Greater, "Greater"),
+        new ValueFilterConditionOption(ScanComparison.Less, "Less"),
+        new ValueFilterConditionOption(ScanComparison.Between, "Between")
+    };
+
     private readonly IMemoryAccessor _memoryAccessor;
     private readonly ulong _centerAddress;
     private readonly DispatcherTimer _timer;
@@ -31,6 +42,9 @@ public partial class NearbyAddressesWindow : Window
     private MemoryDataType _currentDataType;
     private int _entriesPerPage = 200;
     private ulong _pageStartAddress;
+    private int _refreshCursor;
+    private readonly List<NearbyRow> _allRows = new();
+    private NearbyValueFilter? _activeFilter;
 
     public ObservableCollection<NearbyRow> Rows { get; } = new();
 
@@ -60,6 +74,8 @@ public partial class NearbyAddressesWindow : Window
 
         DataTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
         DataTypeBox.SelectedItem = initialType;
+        FilterConditionBox.ItemsSource = _valueFilterOptions;
+        FilterConditionBox.SelectedItem = _valueFilterOptions.FirstOrDefault(x => x.Value == ScanComparison.Equal) ?? _valueFilterOptions.First();
 
         CenterAddressValueText.Text = _centerDisplayText;
         CenterAddressValueText.Foreground = _centerDisplayUseAccent
@@ -72,12 +88,70 @@ public partial class NearbyAddressesWindow : Window
 
         UiUpdateRoutineSettings.ValueRefreshIntervalChanged += OnGlobalValueRefreshIntervalChanged;
 
+        UpdateFilterInputUi();
+        UpdateFilterUiForDataType();
+        UpdateFilterStatusText();
         ApplySettings(showMessageOnError: false);
     }
 
     private void Apply_OnClick(object sender, RoutedEventArgs e)
     {
         ApplySettings(showMessageOnError: true);
+    }
+
+    private void DataTypeBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateFilterUiForDataType();
+    }
+
+    private void FilterConditionBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        UpdateFilterInputUi();
+    }
+
+    private void ApplyFilter_OnClick(object sender, RoutedEventArgs e)
+    {
+        var selectedType = DataTypeBox.SelectedItem is MemoryDataType dataType ? dataType : _currentDataType;
+        if (selectedType != _currentDataType)
+        {
+            MessageBox.Show(this, "Apply Data Type/Page settings first, then apply the filter.", "Filter", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        var effectiveType = _currentDataType;
+        if (effectiveType == MemoryDataType.String)
+        {
+            MessageBox.Show(this, "Value filter is currently disabled for String.", "Filter", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryCreateValueFilter(effectiveType, out var filter))
+        {
+            return;
+        }
+
+        _activeFilter = filter;
+        ApplyFilterToVisibleRows();
+        UpdateFilterStatusText();
+        RefreshVisibleRowsOnly();
+    }
+
+    private void ClearFilter_OnClick(object sender, RoutedEventArgs e)
+    {
+        _activeFilter = null;
+        ApplyFilterToVisibleRows();
+        UpdateFilterStatusText();
+        RefreshVisibleRowsOnly();
+    }
+
+    private void NearbyGrid_OnScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (Math.Abs(e.VerticalChange) < double.Epsilon && Math.Abs(e.ViewportHeightChange) < double.Epsilon)
+        {
+            return;
+        }
+
+        RefreshVisibleRowsOnly();
     }
 
     private void PrevPage_OnClick(object sender, RoutedEventArgs e)
@@ -341,9 +415,15 @@ public partial class NearbyAddressesWindow : Window
         _currentDataType = dataType;
         _entriesPerPage = entriesPerPage;
         _pageStartAddress = ComputeInitialPageStart(_centerAddress, dataType, entriesPerPage);
+        if (_activeFilter is not null && (_activeFilter.DataType != dataType || dataType == MemoryDataType.String))
+        {
+            _activeFilter = null;
+        }
 
         RebuildRows();
         ApplyGlobalValueRefreshInterval(UiUpdateRoutineSettings.ValueRefreshIntervalMs);
+        UpdateFilterUiForDataType();
+        UpdateFilterStatusText();
         RefreshValues();
     }
 
@@ -368,13 +448,328 @@ public partial class NearbyAddressesWindow : Window
         return true;
     }
 
+    private void UpdateFilterInputUi()
+    {
+        var selectedType = DataTypeBox.SelectedItem is MemoryDataType dataType ? dataType : _currentDataType;
+        var showRange = FilterConditionBox.SelectedItem is ValueFilterConditionOption option &&
+                        option.Value == ScanComparison.Between &&
+                        selectedType != MemoryDataType.String;
+
+        FilterToLabelText.Visibility = showRange ? Visibility.Visible : Visibility.Collapsed;
+        FilterValueToText.Visibility = showRange ? Visibility.Visible : Visibility.Collapsed;
+    }
+
+    private void UpdateFilterUiForDataType()
+    {
+        var selectedType = DataTypeBox.SelectedItem is MemoryDataType dataType
+            ? dataType
+            : _currentDataType;
+        var enabled = selectedType != MemoryDataType.String;
+
+        FilterConditionBox.IsEnabled = enabled;
+        FilterValueText.IsEnabled = enabled;
+        FilterValueToText.IsEnabled = enabled;
+        ApplyFilterButton.IsEnabled = enabled;
+        ClearFilterButton.IsEnabled = enabled && _activeFilter is not null;
+
+        if (!enabled && _activeFilter is not null)
+        {
+            _activeFilter = null;
+            ApplyFilterToVisibleRows();
+        }
+
+        UpdateFilterInputUi();
+        UpdateFilterStatusText();
+    }
+
+    private void UpdateFilterStatusText()
+    {
+        ClearFilterButton.IsEnabled = _currentDataType != MemoryDataType.String && _activeFilter is not null;
+
+        if (_currentDataType == MemoryDataType.String)
+        {
+            FilterStatusText.Text = "Filter: Off (String not supported)";
+            return;
+        }
+
+        if (_activeFilter is null)
+        {
+            FilterStatusText.Text = $"Filter: Off ({Rows.Count}/{_allRows.Count})";
+            return;
+        }
+
+        FilterStatusText.Text = $"Filter: {_activeFilter.DisplayText} ({Rows.Count}/{_allRows.Count})";
+    }
+
+    private bool TryCreateValueFilter(MemoryDataType dataType, out NearbyValueFilter filter)
+    {
+        filter = default!;
+
+        if (FilterConditionBox.SelectedItem is not ValueFilterConditionOption option)
+        {
+            MessageBox.Show(this, "Select a filter condition.", "Filter", MessageBoxButton.OK, MessageBoxImage.Information);
+            return false;
+        }
+
+        var comparison = option.Value;
+        if (!ScanService.TryParseValue(dataType, FilterValueText.Text, out var parsedValue))
+        {
+            MessageBox.Show(this, "Enter a valid filter value.", "Filter", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        object? parsedValueTo = null;
+        if (comparison == ScanComparison.Between)
+        {
+            if (!ScanService.TryParseValue(dataType, FilterValueToText.Text, out parsedValueTo))
+            {
+                MessageBox.Show(this, "Enter a valid upper value for range filter.", "Filter", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return false;
+            }
+        }
+
+        filter = new NearbyValueFilter(
+            dataType,
+            comparison,
+            parsedValue,
+            parsedValueTo,
+            comparison == ScanComparison.Between
+                ? $"{option.Label} {FormatValue(parsedValue)} .. {FormatValue(parsedValueTo!)}"
+                : $"{option.Label} {FormatValue(parsedValue)}");
+        return true;
+    }
+
+    private void ApplyFilterToVisibleRows()
+    {
+        var selectedAddresses = NearbyGrid.SelectedItems.OfType<NearbyRow>().Select(x => x.Address).ToHashSet();
+        var currentAddress = (NearbyGrid.CurrentItem as NearbyRow)?.Address;
+
+        Rows.Clear();
+        IEnumerable<NearbyRow> source = _allRows;
+        if (_activeFilter is not null && _currentDataType != MemoryDataType.String)
+        {
+            source = source.Where(MatchesActiveFilter);
+        }
+
+        foreach (var row in source)
+        {
+            Rows.Add(row);
+        }
+
+        _refreshCursor = 0;
+        RestoreSelection(selectedAddresses, currentAddress);
+        UpdatePageInfo();
+    }
+
+    private bool MatchesActiveFilter(NearbyRow row)
+    {
+        if (_activeFilter is null)
+        {
+            return true;
+        }
+
+        if (row.CurrentValue is null)
+        {
+            UpdateRowValue(row);
+        }
+
+        if (row.CurrentValue is null)
+        {
+            return false;
+        }
+
+        if (!TryCompareValuesByType(row.CurrentValue, _activeFilter.Value, _activeFilter.DataType, out var order))
+        {
+            return false;
+        }
+
+        return _activeFilter.Comparison switch
+        {
+            ScanComparison.Equal => order == 0,
+            ScanComparison.NotEqual => order != 0,
+            ScanComparison.Greater => order > 0,
+            ScanComparison.Less => order < 0,
+            ScanComparison.Between => MatchesBetweenFilter(row.CurrentValue, _activeFilter),
+            _ => true
+        };
+    }
+
+    private static bool MatchesBetweenFilter(object currentValue, NearbyValueFilter filter)
+    {
+        if (filter.ValueTo is null)
+        {
+            return false;
+        }
+
+        if (!TryCompareValuesByType(currentValue, filter.Value, filter.DataType, out var first) ||
+            !TryCompareValuesByType(currentValue, filter.ValueTo, filter.DataType, out var second))
+        {
+            return false;
+        }
+
+        if (!TryCompareValuesByType(filter.Value, filter.ValueTo, filter.DataType, out var boundaryOrder))
+        {
+            return false;
+        }
+
+        if (boundaryOrder <= 0)
+        {
+            return first >= 0 && second <= 0;
+        }
+
+        return second >= 0 && first <= 0;
+    }
+
+    private static bool TryCompareValuesByType(object leftValue, object rightValue, MemoryDataType dataType, out int order)
+    {
+        order = 0;
+
+        try
+        {
+            switch (dataType)
+            {
+                case MemoryDataType.Byte:
+                    order = Convert.ToByte(leftValue, CultureInfo.InvariantCulture)
+                        .CompareTo(Convert.ToByte(rightValue, CultureInfo.InvariantCulture));
+                    return true;
+                case MemoryDataType.Int16:
+                    order = Convert.ToInt16(leftValue, CultureInfo.InvariantCulture)
+                        .CompareTo(Convert.ToInt16(rightValue, CultureInfo.InvariantCulture));
+                    return true;
+                case MemoryDataType.Int32:
+                    order = Convert.ToInt32(leftValue, CultureInfo.InvariantCulture)
+                        .CompareTo(Convert.ToInt32(rightValue, CultureInfo.InvariantCulture));
+                    return true;
+                case MemoryDataType.Int64:
+                    order = Convert.ToInt64(leftValue, CultureInfo.InvariantCulture)
+                        .CompareTo(Convert.ToInt64(rightValue, CultureInfo.InvariantCulture));
+                    return true;
+                case MemoryDataType.Float:
+                    order = Convert.ToSingle(leftValue, CultureInfo.InvariantCulture)
+                        .CompareTo(Convert.ToSingle(rightValue, CultureInfo.InvariantCulture));
+                    return true;
+                case MemoryDataType.Double:
+                    order = Convert.ToDouble(leftValue, CultureInfo.InvariantCulture)
+                        .CompareTo(Convert.ToDouble(rightValue, CultureInfo.InvariantCulture));
+                    return true;
+                default:
+                    return false;
+            }
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private void RestoreSelection(HashSet<ulong> selectedAddresses, ulong? currentAddress)
+    {
+        if (selectedAddresses.Count == 0 && currentAddress is null)
+        {
+            return;
+        }
+
+        NearbyGrid.SelectedItems.Clear();
+        NearbyRow? currentRow = null;
+
+        foreach (var row in Rows)
+        {
+            if (selectedAddresses.Contains(row.Address))
+            {
+                NearbyGrid.SelectedItems.Add(row);
+            }
+
+            if (currentAddress.HasValue && row.Address == currentAddress.Value)
+            {
+                currentRow = row;
+            }
+        }
+
+        if (currentRow is not null)
+        {
+            NearbyGrid.CurrentItem = currentRow;
+        }
+        else if (NearbyGrid.SelectedItems.Count > 0)
+        {
+            NearbyGrid.CurrentItem = NearbyGrid.SelectedItems[0];
+        }
+    }
+
+    private void RefreshVisibleRowsOnly()
+    {
+        foreach (var row in GetVisibleRows())
+        {
+            UpdateRowValue(row);
+        }
+    }
+
+    private IReadOnlyList<NearbyRow> GetVisibleRows()
+    {
+        if (Rows.Count == 0)
+        {
+            return Array.Empty<NearbyRow>();
+        }
+
+        var scrollViewer = FindDescendant<ScrollViewer>(NearbyGrid);
+        if (scrollViewer is null)
+        {
+            return Rows;
+        }
+
+        var rowHeight = NearbyGrid.RowHeight;
+        if (double.IsNaN(rowHeight) || rowHeight <= 0)
+        {
+            rowHeight = 22d;
+        }
+
+        int startIndex;
+        int visibleCount;
+
+        if (scrollViewer.CanContentScroll)
+        {
+            startIndex = (int)Math.Floor(scrollViewer.VerticalOffset);
+            visibleCount = (int)Math.Ceiling(scrollViewer.ViewportHeight) + 2;
+        }
+        else
+        {
+            startIndex = (int)Math.Floor(scrollViewer.VerticalOffset / rowHeight);
+            visibleCount = (int)Math.Ceiling(scrollViewer.ViewportHeight / rowHeight) + 2;
+        }
+
+        if (startIndex < 0)
+        {
+            startIndex = 0;
+        }
+
+        if (startIndex >= Rows.Count)
+        {
+            startIndex = Rows.Count - 1;
+        }
+
+        visibleCount = Math.Max(1, visibleCount);
+        var count = Math.Min(visibleCount, Rows.Count - startIndex);
+        if (count <= 0)
+        {
+            return Array.Empty<NearbyRow>();
+        }
+
+        var visible = new List<NearbyRow>(count);
+        for (var i = 0; i < count; i++)
+        {
+            visible.Add(Rows[startIndex + i]);
+        }
+
+        return visible;
+    }
+
     private void RebuildRows()
     {
-        Rows.Clear();
+        _allRows.Clear();
 
         var step = (ulong)GetTypeSize(_currentDataType);
         if (step == 0)
         {
+            Rows.Clear();
             return;
         }
 
@@ -388,7 +783,7 @@ public partial class NearbyAddressesWindow : Window
 
             var address = _pageStartAddress + offset;
             var displayAddress = FormatAddress(address);
-            Rows.Add(new NearbyRow(
+            _allRows.Add(new NearbyRow(
                 address,
                 _currentDataType,
                 displayAddress,
@@ -396,21 +791,59 @@ public partial class NearbyAddressesWindow : Window
                 address == _centerAddress));
         }
 
+        _refreshCursor = 0;
+        ApplyFilterToVisibleRows();
         UpdatePageInfo();
+        UpdateFilterStatusText();
         ScrollToCenterAddressRow();
     }
 
     private void RefreshValues()
     {
-        foreach (var row in Rows)
+        if (_allRows.Count == 0)
         {
+            return;
+        }
+
+        var visibleRows = GetVisibleRows();
+        HashSet<NearbyRow>? visibleSet = null;
+        if (visibleRows.Count > 0)
+        {
+            visibleSet = new HashSet<NearbyRow>();
+            foreach (var row in visibleRows)
+            {
+                UpdateRowValue(row);
+                visibleSet.Add(row);
+            }
+        }
+
+        var batchSize = Math.Clamp(_allRows.Count / 20, MinNearbyRefreshBatchSize, MaxNearbyRefreshBatchSize);
+        var scanned = 0;
+        var processed = 0;
+
+        while (processed < batchSize && scanned < _allRows.Count)
+        {
+            if (_refreshCursor >= _allRows.Count)
+            {
+                _refreshCursor = 0;
+            }
+
+            var row = _allRows[_refreshCursor++];
+            scanned++;
+
+            if (visibleSet is not null && visibleSet.Contains(row))
+            {
+                continue;
+            }
+
             UpdateRowValue(row);
+            processed++;
         }
     }
 
     private void UpdatePageInfo()
     {
-        if (Rows.Count == 0)
+        if (_allRows.Count == 0)
         {
             PageInfoText.Text = "n/a";
             PrevPageButton.IsEnabled = false;
@@ -418,8 +851,8 @@ public partial class NearbyAddressesWindow : Window
             return;
         }
 
-        var from = Rows[0].Address;
-        var to = Rows[Rows.Count - 1].Address;
+        var from = _allRows[0].Address;
+        var to = _allRows[_allRows.Count - 1].Address;
         PageInfoText.Text = $"{FormatRawAddress(from)} .. {FormatRawAddress(to)}";
         PrevPageButton.IsEnabled = from > 0;
         NextPageButton.IsEnabled = to < ulong.MaxValue;
@@ -1294,6 +1727,38 @@ public partial class NearbyAddressesWindow : Window
         };
     }
 
+    private sealed class ValueFilterConditionOption
+    {
+        public ValueFilterConditionOption(ScanComparison value, string label)
+        {
+            Value = value;
+            Label = label;
+        }
+
+        public ScanComparison Value { get; }
+        public string Label { get; }
+
+        public override string ToString() => Label;
+    }
+
+    private sealed class NearbyValueFilter
+    {
+        public NearbyValueFilter(MemoryDataType dataType, ScanComparison comparison, object value, object? valueTo, string displayText)
+        {
+            DataType = dataType;
+            Comparison = comparison;
+            Value = value;
+            ValueTo = valueTo;
+            DisplayText = displayText;
+        }
+
+        public MemoryDataType DataType { get; }
+        public ScanComparison Comparison { get; }
+        public object Value { get; }
+        public object? ValueTo { get; }
+        public string DisplayText { get; }
+    }
+
     private sealed class RelativePointerRouteOptions
     {
         public bool UseAutoRange { get; set; }
@@ -1422,6 +1887,7 @@ public partial class NearbyAddressesWindow : Window
         MemoryDataType.Int64 => sizeof(long),
         MemoryDataType.Float => sizeof(float),
         MemoryDataType.Double => sizeof(double),
+        MemoryDataType.String => sizeof(byte),
         _ => sizeof(int)
     };
 

@@ -10,38 +10,72 @@
         </Grid.RowDefinitions>
 
         <Grid Grid.Row="0" Margin="0,0,0,8">
-            <Grid.ColumnDefinitions>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="120"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="120"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="*"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="Auto"/>
-                <ColumnDefinition Width="Auto"/>
-            </Grid.ColumnDefinitions>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
+            </Grid.RowDefinitions>
 
-            <TextBlock Grid.Column="0" Text="Data Type" VerticalAlignment="Center"/>
-            <ComboBox x:Name="DataTypeBox" Grid.Column="1" Margin="6,0,12,0" VerticalAlignment="Center"/>
+            <Grid Grid.Row="0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="120"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="120"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                </Grid.ColumnDefinitions>
 
-            <TextBlock Grid.Column="2" Text="Entries / Page" VerticalAlignment="Center"/>
-            <TextBox x:Name="EntriesPerPageText" Grid.Column="3" Margin="6,0,12,0" Text="200" VerticalAlignment="Center"/>
+                <TextBlock Grid.Column="0" Text="Data Type" VerticalAlignment="Center"/>
+                <ComboBox x:Name="DataTypeBox" Grid.Column="1" Margin="6,0,12,0" VerticalAlignment="Center" SelectionChanged="DataTypeBox_OnSelectionChanged"/>
 
-            <Button Grid.Column="4" Content="Apply" Width="90" Height="30" Margin="0,0,12,0" Click="Apply_OnClick"/>
+                <TextBlock Grid.Column="2" Text="Entries / Page" VerticalAlignment="Center"/>
+                <TextBox x:Name="EntriesPerPageText" Grid.Column="3" Margin="6,0,12,0" Text="200" VerticalAlignment="Center"/>
 
-            <Button x:Name="PrevPageButton" Grid.Column="6" Width="38" Height="30" Margin="0,0,8,0" Click="PrevPage_OnClick" ToolTip="Previous Page">
-                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72B;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Button>
-            <TextBlock x:Name="PageInfoText" Grid.Column="7" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#FF444444" Text="0x0 .. 0x0"/>
-            <Button x:Name="NextPageButton" Grid.Column="8" Width="38" Height="30" Margin="0,0,16,0" Click="NextPage_OnClick" ToolTip="Next Page">
-                <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
-            </Button>
+                <Button Grid.Column="4" Content="Apply" Width="90" Height="30" Margin="0,0,12,0" Click="Apply_OnClick"/>
 
-            <TextBlock Grid.Column="9" Text="Center:" VerticalAlignment="Center" Foreground="#FF444444"/>
-            <TextBlock x:Name="CenterAddressValueText" Grid.Column="10" VerticalAlignment="Center" Margin="6,0,0,0" Foreground="#FF000000" FontWeight="SemiBold"/>
+                <Button x:Name="PrevPageButton" Grid.Column="6" Width="38" Height="30" Margin="0,0,8,0" Click="PrevPage_OnClick" ToolTip="Previous Page">
+                    <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72B;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Button>
+                <TextBlock x:Name="PageInfoText" Grid.Column="7" VerticalAlignment="Center" Margin="0,0,8,0" Foreground="#FF444444" Text="0x0 .. 0x0"/>
+                <Button x:Name="NextPageButton" Grid.Column="8" Width="38" Height="30" Margin="0,0,16,0" Click="NextPage_OnClick" ToolTip="Next Page">
+                    <TextBlock FontFamily="Segoe MDL2 Assets" FontSize="15" Text="&#xE72A;" HorizontalAlignment="Center" VerticalAlignment="Center"/>
+                </Button>
+
+                <TextBlock Grid.Column="9" Text="Center:" VerticalAlignment="Center" Foreground="#FF444444"/>
+                <TextBlock x:Name="CenterAddressValueText" Grid.Column="10" VerticalAlignment="Center" Margin="6,0,0,0" Foreground="#FF000000" FontWeight="SemiBold"/>
+            </Grid>
+
+            <Grid Grid.Row="1" Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Value Filter" VerticalAlignment="Center"/>
+                <ComboBox x:Name="FilterConditionBox" Grid.Column="1" Margin="6,0,12,0" VerticalAlignment="Center" SelectionChanged="FilterConditionBox_OnSelectionChanged"/>
+
+                <TextBlock Grid.Column="2" Text="Value" VerticalAlignment="Center"/>
+                <TextBox x:Name="FilterValueText" Grid.Column="3" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+                <TextBlock x:Name="FilterToLabelText" Grid.Column="4" Text="To" VerticalAlignment="Center" Visibility="Collapsed"/>
+                <TextBox x:Name="FilterValueToText" Grid.Column="5" Margin="6,0,12,0" VerticalAlignment="Center" Visibility="Collapsed"/>
+
+                <Button x:Name="ApplyFilterButton" Grid.Column="6" Content="Apply Filter" Width="95" Height="30" Margin="0,0,8,0" Click="ApplyFilter_OnClick"/>
+                <Button x:Name="ClearFilterButton" Grid.Column="7" Content="Clear Filter" Width="95" Height="30" Margin="0,0,12,0" Click="ClearFilter_OnClick"/>
+                <TextBlock x:Name="FilterStatusText" Grid.Column="8" VerticalAlignment="Center" Foreground="#FF444444" Text="Filter: Off"/>
+            </Grid>
         </Grid>
 
         <DataGrid x:Name="NearbyGrid"
@@ -54,6 +88,7 @@
                   RowBackground="#FF242424"
                   AlternatingRowBackground="#FF292929"
                   BorderThickness="0"
+                  ScrollViewer.ScrollChanged="NearbyGrid_OnScrollChanged"
                   MouseDoubleClick="NearbyGrid_OnMouseDoubleClick">
             <DataGrid.ContextMenu>
                 <ContextMenu>
