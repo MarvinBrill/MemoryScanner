@@ -24,6 +24,8 @@ public partial class PointerScanWindow : Window
     private const string UnavailableValueText = "???";
     private const int MinPointerRefreshBatchSize = 32;
     private const int MaxPointerRefreshBatchSize = 512;
+    private const int SaveWriteChunkSize = 1024 * 1024;
+    private const int LoadReadChunkSize = 1024 * 1024;
     private readonly PointerScanService _pointerScanService;
     private readonly IMemoryAccessor _memoryAccessor;
     private readonly PointerDisplayContext _displayContext;
@@ -33,8 +35,12 @@ public partial class PointerScanWindow : Window
     private ulong _targetAddress;
     private CancellationTokenSource? _scanCts;
     private bool _isScanRunning;
+    private bool _isSaveRunning;
+    private bool _isLoadRunning;
     private PointerScanOptions _runtimeOptions = new();
     private PointerSessionSaveOptions _saveOptions = new();
+    private PointerSaveProgressWindow? _saveProgressWindow;
+    private PointerLoadProgressWindow? _loadProgressWindow;
     private string? _currentSessionFilePath;
     private int _pointerRefreshCursor;
     private bool _cancelRequestedByUser;
@@ -106,53 +112,56 @@ public partial class PointerScanWindow : Window
             AllowNegativeOffsets = source.AllowNegativeOffsets,
             PointerWidthMode = source.PointerWidthMode,
             UseAddressRange = source.UseAddressRange,
+            ClampSearchToAddressRange = source.ClampSearchToAddressRange,
             AddressRangeFrom = source.AddressRangeFrom,
             AddressRangeTo = source.AddressRangeTo,
             RequireRootInAddressRange = source.RequireRootInAddressRange,
             RequireAllNodesInAddressRange = source.RequireAllNodesInAddressRange,
-            TrimMemoryAfterCancel = source.TrimMemoryAfterCancel
+            TrimMemoryAfterCancel = source.TrimMemoryAfterCancel,
+            EnableDiskSpillToTemp = source.EnableDiskSpillToTemp,
+            MaxTempStorageGigabytes = source.MaxTempStorageGigabytes
         };
     }
 
-    private void MenuLoadResults_OnClick(object sender, RoutedEventArgs e)
+    private async void MenuLoadResults_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
 
-        LoadResultsFromDialog();
+        await LoadResultsFromDialogAsync();
     }
 
-    private void MenuSaveResults_OnClick(object sender, RoutedEventArgs e)
+    private async void MenuSaveResults_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
 
         if (string.IsNullOrWhiteSpace(_currentSessionFilePath))
         {
-            SaveResultsAs();
+            await SaveResultsAsAsync();
             return;
         }
 
-        SaveResultsToPath(_currentSessionFilePath);
+        await SaveResultsToPathAsync(_currentSessionFilePath);
     }
 
-    private void MenuSaveResultsAs_OnClick(object sender, RoutedEventArgs e)
+    private async void MenuSaveResultsAs_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
 
-        SaveResultsAs();
+        await SaveResultsAsAsync();
     }
 
     private async void StartScan_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
@@ -232,7 +241,7 @@ public partial class PointerScanWindow : Window
 
     private async void Rescan_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
@@ -336,7 +345,7 @@ public partial class PointerScanWindow : Window
 
     private void PointerOptions_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
@@ -354,7 +363,7 @@ public partial class PointerScanWindow : Window
 
     private void SaveOptions_OnClick(object sender, RoutedEventArgs e)
     {
-        if (_isScanRunning)
+        if (_isScanRunning || _isSaveRunning || _isLoadRunning)
         {
             return;
         }
@@ -647,7 +656,7 @@ public partial class PointerScanWindow : Window
         _valueRefreshTimer.Start();
     }
 
-    private bool SaveResultsAs()
+    private async Task<bool> SaveResultsAsAsync()
     {
         var dialog = new SaveFileDialog
         {
@@ -662,45 +671,52 @@ public partial class PointerScanWindow : Window
             return false;
         }
 
-        return SaveResultsToPath(NormalizeSavePath(dialog.FileName));
+        return await SaveResultsToPathAsync(dialog.FileName);
     }
 
-    private bool SaveResultsToPath(string path)
+    private async Task<bool> SaveResultsToPathAsync(string path)
     {
+        if (_isSaveRunning || _isLoadRunning)
+        {
+            return false;
+        }
+
         if (!TryBuildOptions(out var options, out var targetAddress))
         {
             MessageBox.Show(this, "Cannot save: invalid options/address.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
-        path = NormalizeSavePath(path);
+        var saveOptionsSnapshot = _saveOptions.Clone();
+        path = NormalizeSavePath(path, saveOptionsSnapshot);
+        var processName = _memoryAccessor.IsAttached ? _memoryAccessor.Process.ProcessName : string.Empty;
+        var sourcePaths = Rows.Select(r => r.Path).ToArray();
+        var moduleSnapshot = _memoryAccessor.IsAttached
+            ? _memoryAccessor.Modules.Select(m => new ModuleRange { Name = m.Name, Base = m.Base, End = m.End }).ToArray()
+            : Array.Empty<ModuleRange>();
+
+        SetSaveUiState(true);
+        ShowSaveProgressWindow(path);
+
+        var saveProgress = new Progress<PointerSaveProgressInfo>(UpdateSaveProgressUi);
 
         try
         {
-            var session = new PointerScanSession
-            {
-                ProcessName = _memoryAccessor.IsAttached ? _memoryAccessor.Process.ProcessName : string.Empty,
-                SavedAtUtc = DateTime.UtcNow,
-                TargetAddress = targetAddress,
-                ValueDataType = _selectedValueDataType,
-                Options = options,
-                Results = Rows.Select(r => PreparePathForSave(r.Path)).ToList()
-            };
-
-            var payload = SerializeSessionPayload(session);
-            if (_saveOptions.EnableGZipCompression)
-            {
-                using var file = File.Create(path);
-                using var gzip = new GZipStream(file, CompressionLevel.Optimal, leaveOpen: false);
-                gzip.Write(payload, 0, payload.Length);
-            }
-            else
-            {
-                File.WriteAllBytes(path, payload);
-            }
+            await Task.Run(() =>
+                SaveSessionToPathCore(
+                    path,
+                    processName,
+                    targetAddress,
+                    _selectedValueDataType,
+                    options,
+                    sourcePaths,
+                    moduleSnapshot,
+                    saveOptionsSnapshot,
+                    saveProgress));
 
             _currentSessionFilePath = path;
             UpdateWindowTitle();
+            PointerProgressText.Text = $"Saved ({sourcePaths.Length} results)";
             return true;
         }
         catch (Exception ex)
@@ -708,11 +724,145 @@ public partial class PointerScanWindow : Window
             MessageBox.Show(this, ex.Message, "Save Error", MessageBoxButton.OK, MessageBoxImage.Error);
             return false;
         }
+        finally
+        {
+            SetSaveUiState(false);
+            CloseSaveProgressWindow();
+        }
     }
 
-    private string NormalizeSavePath(string path)
+    private static void SaveSessionToPathCore(
+        string path,
+        string processName,
+        ulong targetAddress,
+        MemoryDataType valueDataType,
+        PointerScanOptions options,
+        IReadOnlyList<PointerPath> sourcePaths,
+        IReadOnlyList<ModuleRange> modules,
+        PointerSessionSaveOptions saveOptions,
+        IProgress<PointerSaveProgressInfo>? progress)
     {
-        if (_saveOptions.EnableGZipCompression && !path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
+        progress?.Report(new PointerSaveProgressInfo(0, "Preparing data...", $"Collecting {sourcePaths.Count} pointer results"));
+
+        var preparedPaths = new List<PointerPath>(sourcePaths.Count);
+        for (var i = 0; i < sourcePaths.Count; i++)
+        {
+            preparedPaths.Add(PreparePathForSave(sourcePaths[i], modules));
+
+            if (sourcePaths.Count == 0)
+            {
+                continue;
+            }
+
+            if (((i + 1) % 256 == 0) || i == sourcePaths.Count - 1)
+            {
+                var ratio = (i + 1) / (double)sourcePaths.Count;
+                progress?.Report(new PointerSaveProgressInfo(
+                    55 * ratio,
+                    "Preparing data...",
+                    $"Prepared {i + 1}/{sourcePaths.Count}"));
+            }
+        }
+
+        var session = new PointerScanSession
+        {
+            ProcessName = processName,
+            SavedAtUtc = DateTime.UtcNow,
+            TargetAddress = targetAddress,
+            ValueDataType = valueDataType,
+            Options = options,
+            Results = preparedPaths
+        };
+
+        progress?.Report(new PointerSaveProgressInfo(58, "Serializing...", "Building JSON payload"));
+        var payload = SerializeSessionPayload(session, saveOptions);
+        progress?.Report(new PointerSaveProgressInfo(72, "Writing file...", $"{FormatBytes(payload.Length)} payload"));
+
+        if (saveOptions.EnableGZipCompression)
+        {
+            WriteCompressedPayload(path, payload, progress);
+        }
+        else
+        {
+            WriteUncompressedPayload(path, payload, progress);
+        }
+
+        progress?.Report(new PointerSaveProgressInfo(100, "Save finished", $"Saved {preparedPaths.Count} pointers"));
+    }
+
+    private static void WriteCompressedPayload(
+        string path,
+        byte[] payload,
+        IProgress<PointerSaveProgressInfo>? progress)
+    {
+        using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 64, FileOptions.SequentialScan);
+        using var gzip = new GZipStream(file, CompressionLevel.Optimal, leaveOpen: false);
+
+        var processed = 0;
+        while (processed < payload.Length)
+        {
+            var chunkSize = Math.Min(SaveWriteChunkSize, payload.Length - processed);
+            gzip.Write(payload, processed, chunkSize);
+            processed += chunkSize;
+
+            var ratio = payload.Length == 0 ? 1d : processed / (double)payload.Length;
+            var percent = 72 + (ratio * 28);
+            progress?.Report(new PointerSaveProgressInfo(
+                percent,
+                "Compressing and writing...",
+                $"{FormatBytes(processed)} / {FormatBytes(payload.Length)}"));
+        }
+    }
+
+    private static void WriteUncompressedPayload(
+        string path,
+        byte[] payload,
+        IProgress<PointerSaveProgressInfo>? progress)
+    {
+        using var file = new FileStream(path, FileMode.Create, FileAccess.Write, FileShare.None, 1024 * 64, FileOptions.SequentialScan);
+
+        var processed = 0;
+        while (processed < payload.Length)
+        {
+            var chunkSize = Math.Min(SaveWriteChunkSize, payload.Length - processed);
+            file.Write(payload, processed, chunkSize);
+            processed += chunkSize;
+
+            var ratio = payload.Length == 0 ? 1d : processed / (double)payload.Length;
+            var percent = 72 + (ratio * 28);
+            progress?.Report(new PointerSaveProgressInfo(
+                percent,
+                "Writing file...",
+                $"{FormatBytes(processed)} / {FormatBytes(payload.Length)}"));
+        }
+    }
+
+    private static string FormatBytes(long bytes)
+    {
+        if (bytes < 1024)
+        {
+            return $"{bytes} B";
+        }
+
+        var kib = bytes / 1024d;
+        if (kib < 1024)
+        {
+            return $"{kib:0.0} KiB";
+        }
+
+        var mib = kib / 1024d;
+        if (mib < 1024)
+        {
+            return $"{mib:0.0} MiB";
+        }
+
+        var gib = mib / 1024d;
+        return $"{gib:0.00} GiB";
+    }
+
+    private static string NormalizeSavePath(string path, PointerSessionSaveOptions saveOptions)
+    {
+        if (saveOptions.EnableGZipCompression && !path.EndsWith(".gz", StringComparison.OrdinalIgnoreCase))
         {
             return path + ".gz";
         }
@@ -720,14 +870,14 @@ public partial class PointerScanWindow : Window
         return path;
     }
 
-    private byte[] SerializeSessionPayload(PointerScanSession session)
+    private static byte[] SerializeSessionPayload(PointerScanSession session, PointerSessionSaveOptions saveOptions)
     {
         var serializerOptions = new JsonSerializerOptions
         {
-            WriteIndented = !_saveOptions.CompactJson
+            WriteIndented = !saveOptions.CompactJson
         };
 
-        if (_saveOptions.UseCompactSchema)
+        if (saveOptions.UseCompactSchema)
         {
             var compact = BuildCompactSession(session);
             return JsonSerializer.SerializeToUtf8Bytes(compact, serializerOptions);
@@ -762,7 +912,7 @@ public partial class PointerScanWindow : Window
         };
     }
 
-    private void LoadResultsFromDialog()
+    private async Task LoadResultsFromDialogAsync()
     {
         var dialog = new OpenFileDialog
         {
@@ -774,20 +924,34 @@ public partial class PointerScanWindow : Window
             return;
         }
 
-        LoadResultsFromPath(dialog.FileName);
+        await LoadResultsFromPathAsync(dialog.FileName);
     }
 
-    private void LoadResultsFromPath(string path)
+    private async Task LoadResultsFromPathAsync(string path)
     {
+        if (_isLoadRunning)
+        {
+            return;
+        }
+
+        _isLoadRunning = true;
+        SetFileMenuEnabled(false);
+        if (!_isScanRunning)
+        {
+            StartScanButton.IsEnabled = false;
+            RescanButton.IsEnabled = false;
+            PointerOptionsButton.IsEnabled = false;
+            TargetAddressText.IsEnabled = false;
+            ValueDataTypeBox.IsEnabled = false;
+        }
+
+        ShowLoadProgressWindow(path);
+        IProgress<PointerLoadProgressInfo> loadProgress = new Progress<PointerLoadProgressInfo>(UpdateLoadProgressUi);
+
         try
         {
-            var payload = File.ReadAllBytes(path);
-            if (IsGZipData(payload))
-            {
-                payload = DecompressGZip(payload);
-            }
-
-            if (!TryDeserializeSession(payload, out var session) || session is null || session.Options is null)
+            var loadResult = await Task.Run(() => LoadSessionCore(path, loadProgress));
+            if (!TryDeserializeSession(loadResult.Payload, out var session) || session is null || session.Options is null)
             {
                 MessageBox.Show(this, "Invalid file format.", "Load Error", MessageBoxButton.OK, MessageBoxImage.Warning);
                 return;
@@ -804,9 +968,17 @@ public partial class PointerScanWindow : Window
             Rows.ReplaceAll(Array.Empty<PointerPathRow>());
             _pointerRefreshCursor = 0;
             var rows = new List<PointerPathRow>(session.Results.Count);
-            foreach (var pathEntry in session.Results)
+            for (var i = 0; i < session.Results.Count; i++)
             {
-                rows.Add(CreatePointerPathRow(NormalizeLoadedPathForRuntime(pathEntry)));
+                rows.Add(CreatePointerPathRow(NormalizeLoadedPathForRuntime(session.Results[i])));
+                if (((i + 1) % 512 == 0) || i == session.Results.Count - 1)
+                {
+                    var ratio = session.Results.Count == 0 ? 1d : (i + 1) / (double)session.Results.Count;
+                    loadProgress.Report(new PointerLoadProgressInfo(
+                        92 + (ratio * 8),
+                        "Applying results...",
+                        $"Prepared {i + 1}/{session.Results.Count} rows"));
+                }
             }
 
             Rows.ReplaceAll(rows);
@@ -818,11 +990,47 @@ public partial class PointerScanWindow : Window
 
             _currentSessionFilePath = path;
             UpdateWindowTitle();
+            loadProgress.Report(new PointerLoadProgressInfo(100, "Load finished", $"Loaded {Rows.Count} pointer results"));
         }
         catch (Exception ex)
         {
             MessageBox.Show(this, ex.Message, "Load Error", MessageBoxButton.OK, MessageBoxImage.Error);
         }
+        finally
+        {
+            _isLoadRunning = false;
+            if (_isScanRunning)
+            {
+                SetFileMenuEnabled(false);
+            }
+            else
+            {
+                var uiBusy = _isSaveRunning || _isLoadRunning;
+                SetFileMenuEnabled(!uiBusy);
+                StartScanButton.IsEnabled = !uiBusy;
+                RescanButton.IsEnabled = !uiBusy;
+                PointerOptionsButton.IsEnabled = !uiBusy;
+                TargetAddressText.IsEnabled = !uiBusy;
+                ValueDataTypeBox.IsEnabled = !uiBusy;
+            }
+
+            CloseLoadProgressWindow();
+        }
+    }
+
+    private static PointerLoadResult LoadSessionCore(string path, IProgress<PointerLoadProgressInfo>? progress)
+    {
+        progress?.Report(new PointerLoadProgressInfo(0, "Reading file...", $"Opening {Path.GetFileName(path)}"));
+        var payload = ReadAllBytesWithProgress(path, progress, 0, 40);
+
+        if (IsGZipData(payload))
+        {
+            progress?.Report(new PointerLoadProgressInfo(42, "Decompressing...", "Detected GZip payload"));
+            payload = DecompressGZipWithProgress(payload, progress, 42, 78);
+        }
+
+        progress?.Report(new PointerLoadProgressInfo(82, "Deserializing...", "Parsing JSON"));
+        return new PointerLoadResult(payload);
     }
 
     private static bool TryDeserializeSession(byte[] payload, out PointerScanSession? session)
@@ -876,6 +1084,178 @@ public partial class PointerScanWindow : Window
     private static bool IsGZipData(byte[] payload)
     {
         return payload.Length >= 2 && payload[0] == 0x1F && payload[1] == 0x8B;
+    }
+
+    private static byte[] ReadAllBytesWithProgress(
+        string path,
+        IProgress<PointerLoadProgressInfo>? progress,
+        double startPercent,
+        double endPercent)
+    {
+        using var file = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.Read, 1024 * 64, FileOptions.SequentialScan);
+        var totalLength = Math.Max(1L, file.Length);
+        using var target = new MemoryStream(totalLength > int.MaxValue ? int.MaxValue : (int)totalLength);
+
+        var buffer = new byte[LoadReadChunkSize];
+        long totalRead = 0;
+        int read;
+        while ((read = file.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            target.Write(buffer, 0, read);
+            totalRead += read;
+            var ratio = totalRead / (double)totalLength;
+            var percent = startPercent + (ratio * (endPercent - startPercent));
+            progress?.Report(new PointerLoadProgressInfo(
+                percent,
+                "Reading file...",
+                $"{FormatBytes(totalRead)} / {FormatBytes(totalLength)}"));
+        }
+
+        return target.ToArray();
+    }
+
+    private static byte[] DecompressGZipWithProgress(
+        byte[] payload,
+        IProgress<PointerLoadProgressInfo>? progress,
+        double startPercent,
+        double endPercent)
+    {
+        using var sourceStream = new MemoryStream(payload);
+        using var countingSource = new ProgressStream(sourceStream);
+        using var gzip = new GZipStream(countingSource, CompressionMode.Decompress);
+        using var target = new MemoryStream();
+        var buffer = new byte[LoadReadChunkSize];
+        int read;
+        while ((read = gzip.Read(buffer, 0, buffer.Length)) > 0)
+        {
+            target.Write(buffer, 0, read);
+            var consumed = countingSource.BytesRead;
+            var ratio = payload.Length == 0 ? 1d : Math.Min(1d, consumed / (double)payload.Length);
+            var percent = startPercent + (ratio * (endPercent - startPercent));
+            progress?.Report(new PointerLoadProgressInfo(
+                percent,
+                "Decompressing...",
+                $"{FormatBytes(consumed)} / {FormatBytes(payload.Length)} compressed"));
+        }
+
+        return target.ToArray();
+    }
+
+    private sealed class ProgressStream : Stream
+    {
+        private readonly Stream _inner;
+
+        public ProgressStream(Stream inner)
+        {
+            _inner = inner;
+        }
+
+        public long BytesRead { get; private set; }
+
+        public override bool CanRead => _inner.CanRead;
+        public override bool CanSeek => _inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => _inner.Length;
+        public override long Position
+        {
+            get => _inner.Position;
+            set => _inner.Position = value;
+        }
+
+        public override void Flush() => _inner.Flush();
+        public override long Seek(long offset, SeekOrigin origin) => _inner.Seek(offset, origin);
+        public override void SetLength(long value) => _inner.SetLength(value);
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var read = _inner.Read(buffer, offset, count);
+            if (read > 0)
+            {
+                BytesRead += read;
+            }
+
+            return read;
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var read = _inner.Read(buffer);
+            if (read > 0)
+            {
+                BytesRead += read;
+            }
+
+            return read;
+        }
+
+        public override void Write(byte[] buffer, int offset, int count) => throw new NotSupportedException();
+    }
+
+    private readonly struct PointerLoadResult
+    {
+        public PointerLoadResult(byte[] payload)
+        {
+            Payload = payload;
+        }
+
+        public byte[] Payload { get; }
+    }
+
+    private readonly struct PointerLoadProgressInfo
+    {
+        public PointerLoadProgressInfo(double percent, string stage, string detail)
+        {
+            Percent = percent;
+            Stage = stage;
+            Detail = detail;
+        }
+
+        public double Percent { get; }
+        public string Stage { get; }
+        public string Detail { get; }
+    }
+
+    private void ShowLoadProgressWindow(string path)
+    {
+        if (_loadProgressWindow is null || !_loadProgressWindow.IsLoaded)
+        {
+            _loadProgressWindow = new PointerLoadProgressWindow
+            {
+                Owner = this
+            };
+            _loadProgressWindow.Show();
+        }
+        else
+        {
+            _loadProgressWindow.Show();
+        }
+
+        _loadProgressWindow.UpdateProgress(0, "Reading file...", $"Loading {Path.GetFileName(path)}");
+    }
+
+    private void UpdateLoadProgressUi(PointerLoadProgressInfo info)
+    {
+        if (_loadProgressWindow is null || !_loadProgressWindow.IsLoaded)
+        {
+            return;
+        }
+
+        _loadProgressWindow.UpdateProgress(info.Percent, info.Stage, info.Detail);
+    }
+
+    private void CloseLoadProgressWindow()
+    {
+        if (_loadProgressWindow is null)
+        {
+            return;
+        }
+
+        if (_loadProgressWindow.IsLoaded)
+        {
+            _loadProgressWindow.CloseSafely();
+        }
+
+        _loadProgressWindow = null;
     }
 
     private static byte[] DecompressGZip(byte[] payload)
@@ -933,11 +1313,14 @@ public partial class PointerScanWindow : Window
         options.AllowNegativeOffsets = _runtimeOptions.AllowNegativeOffsets;
         options.PointerWidthMode = _runtimeOptions.PointerWidthMode;
         options.UseAddressRange = _runtimeOptions.UseAddressRange;
+        options.ClampSearchToAddressRange = _runtimeOptions.ClampSearchToAddressRange;
         options.AddressRangeFrom = _runtimeOptions.AddressRangeFrom;
         options.AddressRangeTo = _runtimeOptions.AddressRangeTo;
         options.RequireRootInAddressRange = _runtimeOptions.RequireRootInAddressRange;
         options.RequireAllNodesInAddressRange = _runtimeOptions.RequireAllNodesInAddressRange;
         options.TrimMemoryAfterCancel = _runtimeOptions.TrimMemoryAfterCancel;
+        options.EnableDiskSpillToTemp = _runtimeOptions.EnableDiskSpillToTemp;
+        options.MaxTempStorageGigabytes = _runtimeOptions.MaxTempStorageGigabytes;
 
         return true;
     }
@@ -960,15 +1343,15 @@ public partial class PointerScanWindow : Window
             || ulong.TryParse(t, NumberStyles.Integer, CultureInfo.InvariantCulture, out address);
     }
 
-    private PointerPath PreparePathForSave(PointerPath source)
+    private static PointerPath PreparePathForSave(PointerPath source, IReadOnlyList<ModuleRange> modules)
     {
         var path = ClonePath(source);
 
-        if (_memoryAccessor.IsAttached)
+        if (modules.Count > 0)
         {
             if (!string.IsNullOrWhiteSpace(path.BaseModuleName))
             {
-                var moduleByName = _memoryAccessor.Modules.FirstOrDefault(m =>
+                var moduleByName = modules.FirstOrDefault(m =>
                     string.Equals(m.Name, path.BaseModuleName, StringComparison.OrdinalIgnoreCase));
                 if (moduleByName is not null)
                 {
@@ -977,7 +1360,7 @@ public partial class PointerScanWindow : Window
             }
             else
             {
-                var module = _memoryAccessor.Modules.FirstOrDefault(m => m.Contains(path.BaseAddress));
+                var module = modules.FirstOrDefault(m => m.Contains(path.BaseAddress));
                 if (module is not null)
                 {
                     path.BaseModuleName = module.Name;
@@ -986,7 +1369,7 @@ public partial class PointerScanWindow : Window
             }
         }
 
-        path.DisplayExpression = BuildPointerExpression(path);
+        path.DisplayExpression = BuildPointerExpressionForSave(path);
         return path;
     }
 
@@ -1046,6 +1429,16 @@ public partial class PointerScanWindow : Window
         {
             baseText = $"0x{path.BaseAddress:X}";
         }
+
+        var offsetText = string.Join(", ", path.Offsets.Select(FormatOffset));
+        return $"{baseText} -> [{offsetText}]";
+    }
+
+    private static string BuildPointerExpressionForSave(PointerPath path)
+    {
+        var baseText = !string.IsNullOrWhiteSpace(path.BaseModuleName)
+            ? $"{path.BaseModuleName}+0x{path.BaseModuleOffset:X}"
+            : $"0x{path.BaseAddress:X}";
 
         var offsetText = string.Join(", ", path.Offsets.Select(FormatOffset));
         return $"{baseText} -> [{offsetText}]";
@@ -1510,6 +1903,9 @@ public partial class PointerScanWindow : Window
         RescanButton.IsEnabled = false;
         PointerOptionsButton.IsEnabled = false;
         CancelScanButton.IsEnabled = true;
+        TargetAddressText.IsEnabled = false;
+        ValueDataTypeBox.IsEnabled = false;
+        SetFileMenuEnabled(false);
 
         ResetMergePhaseEstimate();
         PointerPhaseText.Text = "Scanning";
@@ -1524,10 +1920,14 @@ public partial class PointerScanWindow : Window
     {
         _isScanRunning = false;
         ApplyGlobalValueRefreshInterval(UiUpdateRoutineSettings.ValueRefreshIntervalMs);
-        StartScanButton.IsEnabled = true;
-        RescanButton.IsEnabled = true;
-        PointerOptionsButton.IsEnabled = true;
+        var uiBusy = _isSaveRunning || _isLoadRunning;
+        StartScanButton.IsEnabled = !uiBusy;
+        RescanButton.IsEnabled = !uiBusy;
+        PointerOptionsButton.IsEnabled = !uiBusy;
         CancelScanButton.IsEnabled = false;
+        TargetAddressText.IsEnabled = !uiBusy;
+        ValueDataTypeBox.IsEnabled = !uiBusy;
+        SetFileMenuEnabled(!uiBusy);
 
         ResetMergePhaseEstimate();
         PointerPhaseText.Text = "Idle";
@@ -1538,6 +1938,89 @@ public partial class PointerScanWindow : Window
         {
             PointerProgressText.Text = "Idle";
         }
+    }
+
+    private void SetSaveUiState(bool isSaving)
+    {
+        _isSaveRunning = isSaving;
+        SetFileMenuEnabled(!isSaving && !_isScanRunning && !_isLoadRunning);
+
+        if (_isScanRunning || _isLoadRunning)
+        {
+            return;
+        }
+
+        StartScanButton.IsEnabled = !isSaving;
+        RescanButton.IsEnabled = !isSaving;
+        PointerOptionsButton.IsEnabled = !isSaving;
+        TargetAddressText.IsEnabled = !isSaving;
+        ValueDataTypeBox.IsEnabled = !isSaving;
+    }
+
+    private void SetFileMenuEnabled(bool isEnabled)
+    {
+        if (LoadResultsMenuItem is not null)
+        {
+            LoadResultsMenuItem.IsEnabled = isEnabled;
+        }
+
+        if (SaveResultsMenuItem is not null)
+        {
+            SaveResultsMenuItem.IsEnabled = isEnabled;
+        }
+
+        if (SaveResultsAsMenuItem is not null)
+        {
+            SaveResultsAsMenuItem.IsEnabled = isEnabled;
+        }
+
+        if (SaveOptionsMenuItem is not null)
+        {
+            SaveOptionsMenuItem.IsEnabled = isEnabled;
+        }
+    }
+
+    private void ShowSaveProgressWindow(string path)
+    {
+        if (_saveProgressWindow is null || !_saveProgressWindow.IsLoaded)
+        {
+            _saveProgressWindow = new PointerSaveProgressWindow
+            {
+                Owner = this
+            };
+            _saveProgressWindow.Show();
+        }
+        else
+        {
+            _saveProgressWindow.Show();
+        }
+
+        _saveProgressWindow.UpdateProgress(0, "Preparing data...", $"Saving to {Path.GetFileName(path)}");
+    }
+
+    private void UpdateSaveProgressUi(PointerSaveProgressInfo info)
+    {
+        if (_saveProgressWindow is null || !_saveProgressWindow.IsLoaded)
+        {
+            return;
+        }
+
+        _saveProgressWindow.UpdateProgress(info.Percent, info.Stage, info.Detail);
+    }
+
+    private void CloseSaveProgressWindow()
+    {
+        if (_saveProgressWindow is null)
+        {
+            return;
+        }
+
+        if (_saveProgressWindow.IsLoaded)
+        {
+            _saveProgressWindow.CloseSafely();
+        }
+
+        _saveProgressWindow = null;
     }
 
     private void ResetMergePhaseEstimate()
@@ -1619,10 +2102,24 @@ public partial class PointerScanWindow : Window
     [DllImport("kernel32.dll")]
     private static extern IntPtr GetCurrentProcess();
 
+    protected override void OnClosing(CancelEventArgs e)
+    {
+        if (_isSaveRunning || _isLoadRunning)
+        {
+            MessageBox.Show(this, "File operation is still running. Please wait until it finishes.", "Working", MessageBoxButton.OK, MessageBoxImage.Information);
+            e.Cancel = true;
+            return;
+        }
+
+        base.OnClosing(e);
+    }
+
     protected override void OnClosed(EventArgs e)
     {
         _scanCts?.Cancel();
         _scanCts?.Dispose();
+        CloseSaveProgressWindow();
+        CloseLoadProgressWindow();
         UiUpdateRoutineSettings.ValueRefreshIntervalChanged -= OnGlobalValueRefreshIntervalChanged;
         _valueRefreshTimer.Stop();
         base.OnClosed(e);
@@ -1798,6 +2295,20 @@ public partial class PointerScanWindow : Window
         public string BaseModuleName { get; set; } = string.Empty;
         public ulong BaseModuleOffset { get; set; }
         public List<int> Offsets { get; set; } = new();
+    }
+
+    private readonly struct PointerSaveProgressInfo
+    {
+        public PointerSaveProgressInfo(double percent, string stage, string detail)
+        {
+            Percent = percent;
+            Stage = stage;
+            Detail = detail;
+        }
+
+        public double Percent { get; }
+        public string Stage { get; }
+        public string Detail { get; }
     }
 
     private sealed class PointerScanSession

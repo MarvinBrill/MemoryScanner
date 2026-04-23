@@ -170,11 +170,14 @@ public sealed class PointerScanOptions
     public bool AllowNegativeOffsets { get; set; } = false;
     public PointerValueWidthMode PointerWidthMode { get; set; } = PointerValueWidthMode.Auto;
     public bool UseAddressRange { get; set; } = false;
+    public bool ClampSearchToAddressRange { get; set; } = true;
     public ulong AddressRangeFrom { get; set; } = 0;
     public ulong AddressRangeTo { get; set; } = 0;
     public bool RequireRootInAddressRange { get; set; } = false;
     public bool RequireAllNodesInAddressRange { get; set; } = false;
     public bool TrimMemoryAfterCancel { get; set; } = false;
+    public bool EnableDiskSpillToTemp { get; set; } = true;
+    public int MaxTempStorageGigabytes { get; set; } = 40;
 
     public int NormalizedThreadCount()
     {

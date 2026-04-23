@@ -4,23 +4,34 @@ using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
+using System.Globalization;
 using System.Runtime.CompilerServices;
 using System.Runtime.InteropServices;
 using System.Windows;
+using System.Windows.Controls;
+using System.Windows.Input;
+using System.Windows.Media;
+using System.Windows.Threading;
 
 namespace MemoryScanner.Windows;
 
 public partial class PointerBaseRepairWindow : Window
 {
     private const int UiProgressThrottleMs = 50;
+    private const string UnavailableValueText = "???";
+    private const int MinRepairRefreshBatchSize = 16;
+    private const int MaxRepairRefreshBatchSize = 256;
 
     private readonly IMemoryAccessor _memoryAccessor;
     private readonly int[] _offsets;
     private readonly int _pointerSizeBytesHint;
     private readonly ObservableCollection<RepairCandidateRow> _results = new();
+    private readonly DispatcherTimer _valueRefreshTimer;
 
     private CancellationTokenSource? _scanCts;
     private bool _isScanning;
+    private int _resultRefreshCursor;
+    private MemoryDataType _currentResultDataType;
 
     public ulong CurrentBaseAddress { get; }
     public ulong? SelectedBaseAddress { get; private set; }
@@ -41,6 +52,7 @@ public partial class PointerBaseRepairWindow : Window
         CurrentBaseAddress = currentBaseAddress;
         _offsets = offsets.ToArray();
         _pointerSizeBytesHint = pointerSizeBytesHint;
+        _currentResultDataType = initialDataType;
 
         ResultsGrid.ItemsSource = _results;
 
@@ -52,6 +64,11 @@ public partial class PointerBaseRepairWindow : Window
         OffsetsText.Text = _offsets.Length == 0
             ? "(no offsets)"
             : string.Join(", ", _offsets.Select(FormatOffset));
+
+        _valueRefreshTimer = new DispatcherTimer();
+        _valueRefreshTimer.Tick += ValueRefreshTimer_OnTick;
+        UiUpdateRoutineSettings.ValueRefreshIntervalChanged += OnGlobalValueRefreshIntervalChanged;
+        ApplyGlobalValueRefreshInterval(UiUpdateRoutineSettings.ValueRefreshIntervalMs);
 
         StatusText.Text = "Idle";
     }
@@ -104,10 +121,12 @@ public partial class PointerBaseRepairWindow : Window
         _scanCts = new CancellationTokenSource();
 
         _results.Clear();
+        _resultRefreshCursor = 0;
         ScanProgressBar.Value = 0;
         SelectedBaseAddress = null;
         SelectedDataType = dataType;
         SelectedPointerSizeBytes = 0;
+        _currentResultDataType = dataType;
 
         SetScanUiState(isBusy: true);
 
@@ -126,6 +145,8 @@ public partial class PointerBaseRepairWindow : Window
             {
                 _results.Add(row);
             }
+
+            RefreshRepairValuesAfterScan();
 
             SelectedPointerSizeBytes = result.PointerSizeBytes;
             ScanProgressBar.Value = 100;
@@ -151,6 +172,109 @@ public partial class PointerBaseRepairWindow : Window
     private void CancelScan_OnClick(object sender, RoutedEventArgs e)
     {
         _scanCts?.Cancel();
+    }
+
+    private void DataTypeBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        if (DataTypeBox.SelectedItem is not MemoryDataType selectedType)
+        {
+            return;
+        }
+
+        _currentResultDataType = selectedType;
+        _resultRefreshCursor = 0;
+        if (_isScanning)
+        {
+            return;
+        }
+
+        RefreshRepairValuesAfterScan();
+    }
+
+    private void ValueRefreshTimer_OnTick(object? sender, EventArgs e)
+    {
+        if (_isScanning)
+        {
+            return;
+        }
+
+        RefreshRepairValuesIncremental();
+    }
+
+    private void ResultsGrid_OnScrollChanged(object sender, ScrollChangedEventArgs e)
+    {
+        if (_isScanning)
+        {
+            return;
+        }
+
+        if (Math.Abs(e.VerticalChange) < 0.01 && Math.Abs(e.ViewportHeightChange) < 0.01)
+        {
+            return;
+        }
+
+        RefreshVisibleRepairRows();
+    }
+
+    private void OnGlobalValueRefreshIntervalChanged(object? sender, int milliseconds)
+    {
+        Dispatcher.Invoke(() =>
+        {
+            ApplyGlobalValueRefreshInterval(milliseconds);
+        });
+    }
+
+    private void ApplyGlobalValueRefreshInterval(int milliseconds)
+    {
+        _valueRefreshTimer.Interval = TimeSpan.FromMilliseconds(milliseconds);
+        _valueRefreshTimer.Stop();
+        _valueRefreshTimer.Start();
+    }
+
+    private void ResultsGrid_OnPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var source = e.OriginalSource as DependencyObject;
+        var row = FindAncestor<DataGridRow>(source);
+        if (row?.Item is RepairCandidateRow candidate)
+        {
+            ResultsGrid.SelectedItem = candidate;
+        }
+    }
+
+    private void CopyDifferenceDecimal_OnClick(object sender, RoutedEventArgs e)
+    {
+        CopyDifferenceToClipboard(asHex: false);
+    }
+
+    private void CopyDifferenceHex_OnClick(object sender, RoutedEventArgs e)
+    {
+        CopyDifferenceToClipboard(asHex: true);
+    }
+
+    private void CopyDifferenceToClipboard(bool asHex)
+    {
+        if (ResultsGrid.SelectedItem is not RepairCandidateRow row)
+        {
+            return;
+        }
+
+        var difference = row.BaseAddress >= CurrentBaseAddress
+            ? row.BaseAddress - CurrentBaseAddress
+            : CurrentBaseAddress - row.BaseAddress;
+
+        var text = asHex
+            ? $"0x{difference:X}"
+            : difference.ToString(CultureInfo.InvariantCulture);
+
+        try
+        {
+            Clipboard.SetText(text);
+            StatusText.Text = $"Copied difference {text}";
+        }
+        catch (Exception ex)
+        {
+            MessageBox.Show(this, ex.Message, "Clipboard Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+        }
     }
 
     private void ApplySelected_OnClick(object sender, RoutedEventArgs e)
@@ -189,6 +313,206 @@ public partial class PointerBaseRepairWindow : Window
         RangeText.IsEnabled = !isBusy;
         StepText.IsEnabled = !isBusy;
         MaxResultsText.IsEnabled = !isBusy;
+
+        if (isBusy)
+        {
+            _valueRefreshTimer.Stop();
+        }
+        else
+        {
+            _valueRefreshTimer.Stop();
+            _valueRefreshTimer.Start();
+        }
+    }
+
+    private void RefreshRepairValuesAfterScan()
+    {
+        if (_results.Count == 0)
+        {
+            return;
+        }
+
+        _resultRefreshCursor = 0;
+        const int fullRefreshThreshold = 2000;
+        if (_results.Count <= fullRefreshThreshold)
+        {
+            RefreshRepairValues();
+            return;
+        }
+
+        RefreshVisibleRepairRows();
+        var warmupBatch = ComputeRefreshBatchSize(_results.Count, MinRepairRefreshBatchSize, MaxRepairRefreshBatchSize);
+        RefreshRepairValuesCore(Math.Min(_results.Count, warmupBatch));
+    }
+
+    private void RefreshRepairValues()
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            SetRepairValuesUnavailableIncremental();
+            return;
+        }
+
+        _resultRefreshCursor = 0;
+        foreach (var row in _results)
+        {
+            UpdateRepairRowValue(row);
+        }
+    }
+
+    private void RefreshRepairValuesIncremental()
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            SetRepairValuesUnavailableIncremental();
+            return;
+        }
+
+        var count = _results.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        var visibleRows = GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid);
+        var visibleSet = visibleRows.Count > 0 ? new HashSet<RepairCandidateRow>(visibleRows) : null;
+        foreach (var row in visibleRows)
+        {
+            UpdateRepairRowValue(row);
+        }
+
+        if (_resultRefreshCursor >= count)
+        {
+            _resultRefreshCursor = 0;
+        }
+
+        var backgroundBudget = Math.Min(count, ComputeRefreshBatchSize(count, MinRepairRefreshBatchSize, MaxRepairRefreshBatchSize));
+        var updated = 0;
+        var attempts = 0;
+        while (updated < backgroundBudget && attempts < count)
+        {
+            if (_resultRefreshCursor >= count)
+            {
+                _resultRefreshCursor = 0;
+            }
+
+            var row = _results[_resultRefreshCursor];
+            _resultRefreshCursor++;
+            attempts++;
+
+            if (visibleSet is not null && visibleSet.Contains(row))
+            {
+                continue;
+            }
+
+            UpdateRepairRowValue(row);
+            updated++;
+        }
+    }
+
+    private void RefreshRepairValuesCore(int maxUpdates)
+    {
+        var total = _results.Count;
+        if (total == 0 || maxUpdates <= 0)
+        {
+            return;
+        }
+
+        var updates = Math.Min(total, maxUpdates);
+        for (var i = 0; i < updates; i++)
+        {
+            if (_resultRefreshCursor >= total)
+            {
+                _resultRefreshCursor = 0;
+            }
+
+            var row = _results[_resultRefreshCursor];
+            _resultRefreshCursor++;
+            UpdateRepairRowValue(row);
+        }
+    }
+
+    private void RefreshVisibleRepairRows()
+    {
+        foreach (var row in GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid))
+        {
+            UpdateRepairRowValue(row);
+        }
+    }
+
+    private void SetRepairValuesUnavailableIncremental()
+    {
+        var count = _results.Count;
+        if (count == 0)
+        {
+            return;
+        }
+
+        var visibleRows = GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid);
+        var visibleSet = visibleRows.Count > 0 ? new HashSet<RepairCandidateRow>(visibleRows) : null;
+        foreach (var row in visibleRows)
+        {
+            row.ValueText = UnavailableValueText;
+        }
+
+        if (_resultRefreshCursor >= count)
+        {
+            _resultRefreshCursor = 0;
+        }
+
+        var backgroundBudget = Math.Min(count, ComputeRefreshBatchSize(count, MinRepairRefreshBatchSize, MaxRepairRefreshBatchSize));
+        var updated = 0;
+        var attempts = 0;
+        while (updated < backgroundBudget && attempts < count)
+        {
+            if (_resultRefreshCursor >= count)
+            {
+                _resultRefreshCursor = 0;
+            }
+
+            var row = _results[_resultRefreshCursor];
+            _resultRefreshCursor++;
+            attempts++;
+
+            if (visibleSet is not null && visibleSet.Contains(row))
+            {
+                continue;
+            }
+
+            row.ValueText = UnavailableValueText;
+            updated++;
+        }
+    }
+
+    private void UpdateRepairRowValue(RepairCandidateRow row)
+    {
+        var dataType = DataTypeBox.SelectedItem is MemoryDataType selected
+            ? selected
+            : _currentResultDataType;
+
+        var pointerSizeBytes = row.PointerSizeBytes == 4 || row.PointerSizeBytes == 8
+            ? row.PointerSizeBytes
+            : ResolvePointerSizeBytes(_pointerSizeBytesHint);
+
+        if (!TryResolveFromBase(row.BaseAddress, _offsets, pointerSizeBytes, out var resolvedAddress))
+        {
+            row.ResolvedAddress = 0;
+            row.ResolvedAddressText = "<unresolved>";
+            row.ValueText = "<invalid>";
+            return;
+        }
+
+        row.ResolvedAddress = resolvedAddress;
+        row.ResolvedAddressText = _memoryAccessor.FormatAddress(resolvedAddress);
+
+        if (_memoryAccessor.TryReadValue(resolvedAddress, dataType, out var value))
+        {
+            row.ValueText = FormatValue(value);
+        }
+        else
+        {
+            row.ValueText = UnavailableValueText;
+        }
     }
 
     private RepairScanRunResult ExecuteRepairScan(
@@ -405,6 +729,99 @@ public partial class PointerBaseRepairWindow : Window
         return offset < 0 ? $"-0x{Math.Abs(offset):X}" : $"0x{offset:X}";
     }
 
+    private static int ComputeRefreshBatchSize(int totalCount, int minBatchSize, int maxBatchSize)
+    {
+        if (totalCount <= 0)
+        {
+            return 0;
+        }
+
+        var scaled = totalCount / 20;
+        return Math.Clamp(scaled, minBatchSize, maxBatchSize);
+    }
+
+    private static IReadOnlyList<T> GetVisibleDataGridItems<T>(DataGrid grid) where T : class
+    {
+        var indexedItems = new List<(int Index, T Item)>();
+        foreach (var row in FindVisualChildren<DataGridRow>(grid))
+        {
+            if (!row.IsVisible)
+            {
+                continue;
+            }
+
+            var index = row.GetIndex();
+            if (index < 0 || index >= grid.Items.Count)
+            {
+                continue;
+            }
+
+            if (grid.Items[index] is T item)
+            {
+                indexedItems.Add((index, item));
+            }
+        }
+
+        if (indexedItems.Count <= 1)
+        {
+            return indexedItems.Select(x => x.Item).ToArray();
+        }
+
+        indexedItems.Sort((a, b) => a.Index.CompareTo(b.Index));
+        var deduplicated = new List<T>(indexedItems.Count);
+        var lastIndex = -1;
+        foreach (var entry in indexedItems)
+        {
+            if (entry.Index == lastIndex)
+            {
+                continue;
+            }
+
+            deduplicated.Add(entry.Item);
+            lastIndex = entry.Index;
+        }
+
+        return deduplicated;
+    }
+
+    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
+    {
+        while (current is not null)
+        {
+            if (current is T typed)
+            {
+                return typed;
+            }
+
+            current = VisualTreeHelper.GetParent(current);
+        }
+
+        return null;
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject? parent) where T : DependencyObject
+    {
+        if (parent is null)
+        {
+            yield break;
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(parent);
+        for (var i = 0; i < childCount; i++)
+        {
+            var child = VisualTreeHelper.GetChild(parent, i);
+            if (child is T typedChild)
+            {
+                yield return typedChild;
+            }
+
+            foreach (var descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
+            }
+        }
+    }
+
     private static string FormatValue(object value)
     {
         return value switch
@@ -413,6 +830,15 @@ public partial class PointerBaseRepairWindow : Window
             double d => d.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
             _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty
         };
+    }
+
+    protected override void OnClosed(EventArgs e)
+    {
+        _scanCts?.Cancel();
+        _scanCts?.Dispose();
+        _valueRefreshTimer.Stop();
+        UiUpdateRoutineSettings.ValueRefreshIntervalChanged -= OnGlobalValueRefreshIntervalChanged;
+        base.OnClosed(e);
     }
 
     private sealed class RepairScanProgress

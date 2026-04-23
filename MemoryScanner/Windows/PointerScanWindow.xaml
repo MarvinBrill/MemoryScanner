@@ -11,13 +11,13 @@
         </Grid.RowDefinitions>
 
         <Menu Grid.Row="0" Margin="0,0,0,8">
-            <MenuItem Header="_File">
-                <MenuItem Header="_Load..." Click="MenuLoadResults_OnClick"/>
+            <MenuItem x:Name="FileMenuItem" Header="_File">
+                <MenuItem x:Name="LoadResultsMenuItem" Header="_Load..." Click="MenuLoadResults_OnClick"/>
                 <Separator/>
-                <MenuItem Header="_Save" Click="MenuSaveResults_OnClick"/>
-                <MenuItem Header="Save _As..." Click="MenuSaveResultsAs_OnClick"/>
+                <MenuItem x:Name="SaveResultsMenuItem" Header="_Save" Click="MenuSaveResults_OnClick"/>
+                <MenuItem x:Name="SaveResultsAsMenuItem" Header="Save _As..." Click="MenuSaveResultsAs_OnClick"/>
                 <Separator/>
-                <MenuItem Header="Save _Options..." Click="SaveOptions_OnClick"/>
+                <MenuItem x:Name="SaveOptionsMenuItem" Header="Save _Options..." Click="SaveOptions_OnClick"/>
             </MenuItem>
         </Menu>
 

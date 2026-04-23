@@ -1197,6 +1197,52 @@ public partial class MainWindow : Window
             dialog.SelectedDataType);
     }
 
+    private void RecalculatePointerBaseFromWatch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (WatchGrid.SelectedItem is not WatchEntry selected)
+        {
+            return;
+        }
+
+        if (!TryCreatePointerRepairSeed(selected, out var currentBaseAddress, out var offsets, out var pointerSizeHint))
+        {
+            MessageBox.Show(this,
+                "Pointer base recalculation is available for pointer entries (base + optional offsets).",
+                "Not Supported",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new PointerBaseRecalculateWindow(
+            _memoryAccessor,
+            currentBaseAddress,
+            offsets,
+            pointerSizeHint,
+            selected.DataType)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true || !dialog.SelectedBaseAddress.HasValue)
+        {
+            return;
+        }
+
+        ApplyPointerRepairResult(
+            selected,
+            dialog.SelectedBaseAddress.Value,
+            offsets,
+            dialog.SelectedPointerSizeBytes > 0 ? dialog.SelectedPointerSizeBytes : pointerSizeHint,
+            selected.DataType);
+    }
+
     private bool TryCreatePointerRepairSeed(WatchEntry entry, out ulong baseAddress, out int[] offsets, out int pointerSizeHint)
     {
         baseAddress = 0;

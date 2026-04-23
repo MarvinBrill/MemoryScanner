@@ -34,11 +34,14 @@ public partial class PointerScanOptionsWindow : Window
         AllowNegativeOffsetsBox.IsChecked = current.AllowNegativeOffsets;
 
         UseAddressRangeBox.IsChecked = current.UseAddressRange;
+        ClampSearchRangeBox.IsChecked = current.ClampSearchToAddressRange;
         AddressRangeFromText.Text = $"0x{current.AddressRangeFrom:X}";
         AddressRangeToText.Text = $"0x{current.AddressRangeTo:X}";
         RequireRootInRangeBox.IsChecked = current.RequireRootInAddressRange;
         RequireAllNodesInRangeBox.IsChecked = current.RequireAllNodesInAddressRange;
         TrimMemoryAfterCancelBox.IsChecked = current.TrimMemoryAfterCancel;
+        EnableDiskSpillBox.IsChecked = current.EnableDiskSpillToTemp;
+        MaxTempStorageGbText.Text = Math.Max(1, current.MaxTempStorageGigabytes).ToString(CultureInfo.InvariantCulture);
 
         AlignmentBox.Text = Math.Max(1, current.Alignment).ToString(CultureInfo.InvariantCulture);
         PointerWidthModeBox.SelectedIndex = current.PointerWidthMode switch
@@ -50,6 +53,7 @@ public partial class PointerScanOptionsWindow : Window
 
         UpdateResultLimitState();
         UpdateRangeState();
+        UpdateDiskSpillState();
     }
 
     private void UseResultLimitBox_OnChanged(object sender, RoutedEventArgs e)
@@ -60,6 +64,11 @@ public partial class PointerScanOptionsWindow : Window
     private void UseAddressRangeBox_OnChanged(object sender, RoutedEventArgs e)
     {
         UpdateRangeState();
+    }
+
+    private void EnableDiskSpillBox_OnChanged(object sender, RoutedEventArgs e)
+    {
+        UpdateDiskSpillState();
     }
 
     private void UpdateResultLimitState()
@@ -73,8 +82,15 @@ public partial class PointerScanOptionsWindow : Window
         var enabled = UseAddressRangeBox.IsChecked == true;
         AddressRangeFromText.IsEnabled = enabled;
         AddressRangeToText.IsEnabled = enabled;
+        ClampSearchRangeBox.IsEnabled = enabled;
         RequireRootInRangeBox.IsEnabled = enabled;
         RequireAllNodesInRangeBox.IsEnabled = enabled;
+    }
+
+    private void UpdateDiskSpillState()
+    {
+        var enabled = EnableDiskSpillBox.IsChecked == true;
+        MaxTempStorageGbText.IsEnabled = enabled;
     }
 
     private void Cancel_OnClick(object sender, RoutedEventArgs e)
@@ -136,6 +152,9 @@ public partial class PointerScanOptionsWindow : Window
         var rangeTo = _current.AddressRangeTo;
         var requireRootInRange = false;
         var requireAllNodesInRange = false;
+        var clampSearchToRange = _current.ClampSearchToAddressRange;
+        var enableDiskSpill = EnableDiskSpillBox.IsChecked != false;
+        var maxTempStorageGb = Math.Max(1, _current.MaxTempStorageGigabytes);
 
         if (useAddressRange)
         {
@@ -153,6 +172,18 @@ public partial class PointerScanOptionsWindow : Window
 
             requireRootInRange = RequireRootInRangeBox.IsChecked == true;
             requireAllNodesInRange = RequireAllNodesInRangeBox.IsChecked == true;
+            clampSearchToRange = ClampSearchRangeBox.IsChecked != false;
+        }
+
+        if (enableDiskSpill)
+        {
+            if (!int.TryParse(MaxTempStorageGbText.Text, NumberStyles.Integer, CultureInfo.InvariantCulture, out maxTempStorageGb)
+                || maxTempStorageGb < 1
+                || maxTempStorageGb > 1024)
+            {
+                MessageBox.Show(this, "Max temp storage must be between 1 and 1024 GB.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+                return;
+            }
         }
 
         SelectedOptions = new PointerScanOptions
@@ -174,11 +205,14 @@ public partial class PointerScanOptionsWindow : Window
             AggressiveNodeDeduplication = AggressiveNodeDeduplicationBox.IsChecked != false,
             AllowNegativeOffsets = AllowNegativeOffsetsBox.IsChecked == true,
             UseAddressRange = useAddressRange,
+            ClampSearchToAddressRange = clampSearchToRange,
             AddressRangeFrom = rangeFrom,
             AddressRangeTo = rangeTo,
             RequireRootInAddressRange = requireRootInRange,
             RequireAllNodesInAddressRange = requireAllNodesInRange,
-            TrimMemoryAfterCancel = TrimMemoryAfterCancelBox.IsChecked == true
+            TrimMemoryAfterCancel = TrimMemoryAfterCancelBox.IsChecked == true,
+            EnableDiskSpillToTemp = enableDiskSpill,
+            MaxTempStorageGigabytes = maxTempStorageGb
         };
 
         DialogResult = true;

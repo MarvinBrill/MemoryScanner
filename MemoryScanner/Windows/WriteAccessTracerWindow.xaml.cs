@@ -564,6 +564,7 @@ public partial class WriteAccessTracerWindow : Window
         return new PointerScanOptions
         {
             UseAddressRange = true,
+            ClampSearchToAddressRange = true,
             AddressRangeFrom = module.Base,
             AddressRangeTo = rangeTo,
             RequireRootInAddressRange = true,

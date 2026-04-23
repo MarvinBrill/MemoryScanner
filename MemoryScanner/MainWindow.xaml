@@ -114,9 +114,10 @@
                                 <MenuItem Header="Write Value..." Click="WriteValueFromContext_OnClick"/>
                                 <MenuItem Header="Copy Address" Click="CopyWatchAddress_OnClick"/>
                                 <Separator/>
-                                <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
-                                <MenuItem Header="Repair Pointer Base..." Click="RepairPointerBaseFromWatch_OnClick"/>
-                                <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromWatch_OnClick"/>
+                            <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
+                            <MenuItem Header="Repair Pointer Base..." Click="RepairPointerBaseFromWatch_OnClick"/>
+                            <MenuItem Header="Recalculate Pointer Base..." Click="RecalculatePointerBaseFromWatch_OnClick"/>
+                            <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromWatch_OnClick"/>
                                 <MenuItem Header="Open Memory Viewer" Click="OpenMemoryViewerFromWatch_OnClick"/>
                                 <MenuItem Header="Find out what writes/accesses this address" Click="FindWriteAccessFromWatch_OnClick"/>
                             </ContextMenu>

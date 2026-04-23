@@ -34,7 +34,7 @@
             </Grid.ColumnDefinitions>
 
             <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" Text="Data Type"/>
-            <ComboBox x:Name="DataTypeBox" Grid.Column="1" Height="28"/>
+            <ComboBox x:Name="DataTypeBox" Grid.Column="1" Height="28" SelectionChanged="DataTypeBox_OnSelectionChanged"/>
 
             <TextBlock Grid.Column="3" VerticalAlignment="Center" Margin="0,0,8,0" Text="Expected Value"/>
             <TextBox x:Name="ExpectedValueText" Grid.Column="4" Height="28" VerticalContentAlignment="Center"/>
@@ -80,7 +80,15 @@
                   VirtualizingPanel.IsVirtualizing="True"
                   VirtualizingPanel.VirtualizationMode="Recycling"
                   ScrollViewer.CanContentScroll="True"
-                  HeadersVisibility="Column">
+                  ScrollViewer.ScrollChanged="ResultsGrid_OnScrollChanged"
+                  HeadersVisibility="Column"
+                  PreviewMouseRightButtonDown="ResultsGrid_OnPreviewMouseRightButtonDown">
+            <DataGrid.ContextMenu>
+                <ContextMenu>
+                    <MenuItem Header="Copy Difference (Decimal)" Click="CopyDifferenceDecimal_OnClick"/>
+                    <MenuItem Header="Copy Difference (Hex)" Click="CopyDifferenceHex_OnClick"/>
+                </ContextMenu>
+            </DataGrid.ContextMenu>
             <DataGrid.Columns>
                 <DataGridTextColumn Header="Base Address" Binding="{Binding BaseAddressText}" Width="2*"/>
                 <DataGridTextColumn Header="Resolved Address" Binding="{Binding ResolvedAddressText}" Width="2*"/>
