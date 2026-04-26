@@ -1,9 +1,9 @@
-﻿using MemoryScanner.Core;
+using MemoryScanner.Core;
 using MemoryScanner.Models;
 using MemoryScanner.Windows;
+using MemoryScanner.Windows.Shared;
 using Microsoft.Win32;
 using System.Collections.ObjectModel;
-using System.Collections.Specialized;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
@@ -144,7 +144,7 @@ public partial class MainWindow : Window
     private void WatchGrid_OnMouseDoubleClick(object sender, System.Windows.Input.MouseButtonEventArgs e)
     {
         var source = e.OriginalSource as DependencyObject;
-        var cell = FindVisualParent<DataGridCell>(source);
+        var cell = DataGridVisualUtilities.FindAncestor<DataGridCell>(source);
         if (cell?.Column is null || cell.DataContext is not WatchEntry entry)
         {
             return;
@@ -603,7 +603,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var visibleRows = GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid);
+        var visibleRows = DataGridVisualUtilities.GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid);
         var visibleSet = visibleRows.Count > 0 ? new HashSet<ScanResultRow>(visibleRows) : null;
         foreach (var row in visibleRows)
         {
@@ -645,18 +645,18 @@ public partial class MainWindow : Window
         _watchDragSourceEntry = null;
 
         var source = e.OriginalSource as DependencyObject;
-        if (FindVisualParent<DataGridColumnHeader>(source) is not null)
+        if (DataGridVisualUtilities.FindAncestor<DataGridColumnHeader>(source) is not null)
         {
             return;
         }
 
-        var cell = FindVisualParent<DataGridCell>(source);
+        var cell = DataGridVisualUtilities.FindAncestor<DataGridCell>(source);
         if (cell?.Column is DataGridCheckBoxColumn)
         {
             return;
         }
 
-        var row = FindVisualParent<DataGridRow>(source);
+        var row = DataGridVisualUtilities.FindAncestor<DataGridRow>(source);
         if (row?.DataContext is WatchEntry entry)
         {
             _watchDragSourceEntry = entry;
@@ -716,7 +716,7 @@ public partial class MainWindow : Window
             }
 
             var source = e.OriginalSource as DependencyObject;
-            var targetRow = FindVisualParent<DataGridRow>(source);
+            var targetRow = DataGridVisualUtilities.FindAncestor<DataGridRow>(source);
             var targetEntry = targetRow?.Item as WatchEntry;
             var newIndex = targetEntry is null
                 ? _watchEntries.Count - 1
@@ -956,7 +956,7 @@ public partial class MainWindow : Window
         {
             ScanProgressText.Text = "Scan canceled";
         }
-        catch (AggregateException ex) when (IsOnlyCancellation(ex))
+        catch (AggregateException ex) when (ExceptionUtilities.IsOnlyCancellation(ex))
         {
             ScanProgressText.Text = "Scan canceled";
         }
@@ -1042,7 +1042,7 @@ public partial class MainWindow : Window
         }
 
         var source = e.OriginalSource as DependencyObject;
-        var row = FindVisualParent<DataGridRow>(source);
+        var row = DataGridVisualUtilities.FindAncestor<DataGridRow>(source);
         if (row?.Item is not ScanResultRow clickedRow)
         {
             _allowScanResultDoubleClickAction = false;
@@ -1744,7 +1744,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var visibleEntries = GetVisibleDataGridItems<WatchEntry>(WatchGrid);
+        var visibleEntries = DataGridVisualUtilities.GetVisibleDataGridItems<WatchEntry>(WatchGrid);
         var visibleSet = visibleEntries.Count > 0 ? new HashSet<WatchEntry>(visibleEntries) : null;
         foreach (var entry in visibleEntries)
         {
@@ -1782,7 +1782,7 @@ public partial class MainWindow : Window
 
     private void RefreshVisibleWatchEntries()
     {
-        foreach (var entry in GetVisibleDataGridItems<WatchEntry>(WatchGrid))
+        foreach (var entry in DataGridVisualUtilities.GetVisibleDataGridItems<WatchEntry>(WatchGrid))
         {
             UpdateWatchEntryValue(entry);
         }
@@ -1790,7 +1790,7 @@ public partial class MainWindow : Window
 
     private void RefreshVisibleScanResultRows()
     {
-        foreach (var row in GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid))
+        foreach (var row in DataGridVisualUtilities.GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid))
         {
             UpdateScanResultRowValue(row);
         }
@@ -1804,7 +1804,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var visibleEntries = GetVisibleDataGridItems<WatchEntry>(WatchGrid);
+        var visibleEntries = DataGridVisualUtilities.GetVisibleDataGridItems<WatchEntry>(WatchGrid);
         var visibleSet = visibleEntries.Count > 0 ? new HashSet<WatchEntry>(visibleEntries) : null;
         foreach (var entry in visibleEntries)
         {
@@ -1850,7 +1850,7 @@ public partial class MainWindow : Window
             return;
         }
 
-        var visibleRows = GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid);
+        var visibleRows = DataGridVisualUtilities.GetVisibleDataGridItems<ScanResultRow>(ScanResultGrid);
         var visibleSet = visibleRows.Count > 0 ? new HashSet<ScanResultRow>(visibleRows) : null;
         foreach (var row in visibleRows)
         {
@@ -2136,13 +2136,7 @@ public partial class MainWindow : Window
 
     private static int ComputeRefreshBatchSize(int totalCount, int minBatchSize, int maxBatchSize)
     {
-        if (totalCount <= 0)
-        {
-            return 0;
-        }
-
-        var scaled = totalCount / 20;
-        return Math.Clamp(scaled, minBatchSize, maxBatchSize);
+        return RefreshBatchSizer.Compute(totalCount, minBatchSize, maxBatchSize);
     }
 
     private bool IsProcessBaseAddressText(string? text)
@@ -2158,12 +2152,7 @@ public partial class MainWindow : Window
 
     private static string FormatValue(object value)
     {
-        return value switch
-        {
-            float f => f.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
-            double d => d.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
-            _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty
-        };
+        return ValueTextFormatter.Format(value);
     }
 
     private string BuildWatchEntryCopyText()
@@ -2299,93 +2288,6 @@ public partial class MainWindow : Window
         window.ShowDialog();
     }
 
-    private static bool IsOnlyCancellation(AggregateException ex)
-    {
-        return ex.Flatten().InnerExceptions.All(inner => inner is OperationCanceledException);
-    }
-
-    private static T? FindVisualParent<T>(DependencyObject? current) where T : DependencyObject
-    {
-        while (current is not null)
-        {
-            if (current is T typed)
-            {
-                return typed;
-            }
-
-            current = VisualTreeHelper.GetParent(current);
-        }
-
-        return null;
-    }
-
-    private static IReadOnlyList<T> GetVisibleDataGridItems<T>(DataGrid grid) where T : class
-    {
-        var indexedItems = new List<(int Index, T Item)>();
-        foreach (var row in FindVisualChildren<DataGridRow>(grid))
-        {
-            if (!row.IsVisible)
-            {
-                continue;
-            }
-
-            var index = row.GetIndex();
-            if (index < 0 || index >= grid.Items.Count)
-            {
-                continue;
-            }
-
-            if (grid.Items[index] is T item)
-            {
-                indexedItems.Add((index, item));
-            }
-        }
-
-        if (indexedItems.Count <= 1)
-        {
-            return indexedItems.Select(x => x.Item).ToArray();
-        }
-
-        indexedItems.Sort((a, b) => a.Index.CompareTo(b.Index));
-        var deduplicated = new List<T>(indexedItems.Count);
-        var lastIndex = -1;
-        foreach (var entry in indexedItems)
-        {
-            if (entry.Index == lastIndex)
-            {
-                continue;
-            }
-
-            deduplicated.Add(entry.Item);
-            lastIndex = entry.Index;
-        }
-
-        return deduplicated;
-    }
-
-    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject? parent) where T : DependencyObject
-    {
-        if (parent is null)
-        {
-            yield break;
-        }
-
-        var childCount = VisualTreeHelper.GetChildrenCount(parent);
-        for (var i = 0; i < childCount; i++)
-        {
-            var child = VisualTreeHelper.GetChild(parent, i);
-            if (child is T typedChild)
-            {
-                yield return typedChild;
-            }
-
-            foreach (var descendant in FindVisualChildren<T>(child))
-            {
-                yield return descendant;
-            }
-        }
-    }
-
     private string? PromptForText(string title, string label, string defaultValue)
     {
         var window = new Window
@@ -2487,157 +2389,8 @@ public partial class MainWindow : Window
         base.OnClosed(e);
     }
 
-
-    private sealed class ScanComparisonOption
-    {
-        public ScanComparisonOption(ScanComparison value, string label)
-        {
-            Value = value;
-            Label = label;
-        }
-
-        public ScanComparison Value { get; }
-        public string Label { get; }
-
-        public override string ToString()
-        {
-            return Label;
-        }
-    }
-
-    public sealed class ScanResultRow : INotifyPropertyChanged
-    {
-        private string _valueText;
-        private readonly ScanResultDisplayContext _displayContext;
-        private string? _displayAddress;
-        private string? _addressHex;
-        private bool _isProcessBaseDisplay;
-
-        public ScanResultRow(ScanResult result, ScanResultDisplayContext displayContext)
-        {
-            _displayContext = displayContext;
-            Address = result.Address;
-            DataType = result.DataType;
-            StringByteLength = result.StringByteLength;
-            _valueText = result.ValueText;
-        }
-
-        public ulong Address { get; }
-        public string AddressHex => _addressHex ??= $"0x{Address:X}";
-        public string DisplayAddress
-        {
-            get
-            {
-                EnsureAddressPresentation();
-                return _displayAddress!;
-            }
-        }
-        public string ValueText
-        {
-            get => _valueText;
-            set
-            {
-                if (_valueText == value) return;
-                _valueText = value;
-                OnPropertyChanged();
-            }
-        }
-        public bool IsProcessBaseDisplay
-        {
-            get
-            {
-                EnsureAddressPresentation();
-                return _isProcessBaseDisplay;
-            }
-        }
-        public MemoryDataType DataType { get; }
-        public int StringByteLength { get; }
-
-        public event PropertyChangedEventHandler? PropertyChanged;
-
-        private void EnsureAddressPresentation()
-        {
-            if (_displayAddress is not null)
-            {
-                return;
-            }
-
-            var displayAddress = _displayContext.FormatAddress(Address);
-            _displayAddress = displayAddress;
-            _isProcessBaseDisplay = _displayContext.IsProcessBaseAddress(displayAddress);
-        }
-
-        private void OnPropertyChanged([CallerMemberName] string? propertyName = null)
-        {
-            PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
-        }
-    }
-
-    public sealed class BulkObservableCollection<T> : ObservableCollection<T>
-    {
-        public void ReplaceAll(IEnumerable<T> items)
-        {
-            CheckReentrancy();
-            Items.Clear();
-            foreach (var item in items)
-            {
-                Items.Add(item);
-            }
-
-            OnPropertyChanged(new PropertyChangedEventArgs(nameof(Count)));
-            OnPropertyChanged(new PropertyChangedEventArgs("Item[]"));
-            OnCollectionChanged(new NotifyCollectionChangedEventArgs(NotifyCollectionChangedAction.Reset));
-        }
-    }
-
-    public sealed class ScanResultDisplayContext
-    {
-        private readonly bool _useProcessBaseFormatting;
-        private readonly string? _processBasePrefix;
-        private readonly string _processName = "Process";
-        private readonly List<ModuleRange> _modules = new();
-
-        public ScanResultDisplayContext(IMemoryAccessor memoryAccessor)
-        {
-            if (!memoryAccessor.IsAttached)
-            {
-                return;
-            }
-
-            _useProcessBaseFormatting = true;
-            _processName = memoryAccessor.Process.ProcessName;
-            _processBasePrefix = _processName + "+0x";
-            _modules = memoryAccessor.Modules.ToList();
-        }
-
-        public string FormatAddress(ulong address)
-        {
-            if (!_useProcessBaseFormatting)
-            {
-                return $"0x{address:X}";
-            }
-
-            foreach (var module in _modules)
-            {
-                if (!module.Contains(address))
-                {
-                    continue;
-                }
-
-                var offset = address - module.Base;
-                return $"{_processName}+0x{offset:X}";
-            }
-
-            return $"0x{address:X}";
-        }
-
-        public bool IsProcessBaseAddress(string text)
-        {
-            return !string.IsNullOrWhiteSpace(_processBasePrefix)
-                && text.StartsWith(_processBasePrefix, StringComparison.OrdinalIgnoreCase);
-        }
-    }
 }
+
 
 
 

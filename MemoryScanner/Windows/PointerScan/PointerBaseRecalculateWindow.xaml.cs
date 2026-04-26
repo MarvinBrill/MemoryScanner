@@ -169,12 +169,7 @@ public partial class PointerBaseRecalculateWindow : Window
 
     private static string FormatValue(object value)
     {
-        return value switch
-        {
-            float f => f.ToString("0.######", CultureInfo.InvariantCulture),
-            double d => d.ToString("0.######", CultureInfo.InvariantCulture),
-            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
-        };
+        return ValueTextFormatter.Format(value);
     }
 
     private void Apply_OnClick(object sender, RoutedEventArgs e)

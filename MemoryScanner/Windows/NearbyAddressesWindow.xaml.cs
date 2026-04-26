@@ -1,5 +1,6 @@
 using MemoryScanner.Core;
 using MemoryScanner.Models;
+using MemoryScanner.Windows.Shared;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Diagnostics;
@@ -205,12 +206,12 @@ public partial class NearbyAddressesWindow : Window
     private void NearbyGrid_OnMouseDoubleClick(object sender, MouseButtonEventArgs e)
     {
         var source = e.OriginalSource as DependencyObject;
-        if (FindAncestor<DataGridColumnHeader>(source) is not null)
+        if (DataGridVisualUtilities.FindAncestor<DataGridColumnHeader>(source) is not null)
         {
             return;
         }
 
-        var rowContainer = FindAncestor<DataGridRow>(source);
+        var rowContainer = DataGridVisualUtilities.FindAncestor<DataGridRow>(source);
         if (rowContainer?.Item is not NearbyRow row)
         {
             return;
@@ -326,28 +327,13 @@ public partial class NearbyAddressesWindow : Window
         }
 
         var source = e.OriginalSource as DependencyObject;
-        if (FindAncestor<DataGridCell>(source) is null)
+        if (DataGridVisualUtilities.FindAncestor<DataGridCell>(source) is null)
         {
             return;
         }
 
         row.IsSelected = false;
         e.Handled = true;
-    }
-
-    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
-    {
-        while (current is not null)
-        {
-            if (current is T match)
-            {
-                return match;
-            }
-
-            current = VisualTreeHelper.GetParent(current);
-        }
-
-        return null;
     }
 
     private static T? FindDescendant<T>(DependencyObject? root) where T : DependencyObject
@@ -1822,12 +1808,7 @@ public partial class NearbyAddressesWindow : Window
 
     private static string FormatValue(object value)
     {
-        return value switch
-        {
-            float f => f.ToString("0.######", CultureInfo.InvariantCulture),
-            double d => d.ToString("0.######", CultureInfo.InvariantCulture),
-            _ => Convert.ToString(value, CultureInfo.InvariantCulture) ?? string.Empty
-        };
+        return ValueTextFormatter.Format(value);
     }
 
     private string FormatAddress(ulong address)

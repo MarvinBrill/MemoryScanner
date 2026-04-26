@@ -1,5 +1,6 @@
 ﻿using MemoryScanner.Core;
 using MemoryScanner.Models;
+using MemoryScanner.Windows.Shared;
 using System.Buffers.Binary;
 using System.Collections.ObjectModel;
 using System.ComponentModel;
@@ -234,7 +235,7 @@ public partial class PointerBaseRepairWindow : Window
     private void ResultsGrid_OnPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
     {
         var source = e.OriginalSource as DependencyObject;
-        var row = FindAncestor<DataGridRow>(source);
+        var row = DataGridVisualUtilities.FindAncestor<DataGridRow>(source);
         if (row?.Item is RepairCandidateRow candidate)
         {
             ResultsGrid.SelectedItem = candidate;
@@ -374,7 +375,7 @@ public partial class PointerBaseRepairWindow : Window
             return;
         }
 
-        var visibleRows = GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid);
+        var visibleRows = DataGridVisualUtilities.GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid);
         var visibleSet = visibleRows.Count > 0 ? new HashSet<RepairCandidateRow>(visibleRows) : null;
         foreach (var row in visibleRows)
         {
@@ -434,7 +435,7 @@ public partial class PointerBaseRepairWindow : Window
 
     private void RefreshVisibleRepairRows()
     {
-        foreach (var row in GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid))
+        foreach (var row in DataGridVisualUtilities.GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid))
         {
             UpdateRepairRowValue(row);
         }
@@ -448,7 +449,7 @@ public partial class PointerBaseRepairWindow : Window
             return;
         }
 
-        var visibleRows = GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid);
+        var visibleRows = DataGridVisualUtilities.GetVisibleDataGridItems<RepairCandidateRow>(ResultsGrid);
         var visibleSet = visibleRows.Count > 0 ? new HashSet<RepairCandidateRow>(visibleRows) : null;
         foreach (var row in visibleRows)
         {
@@ -731,105 +732,12 @@ public partial class PointerBaseRepairWindow : Window
 
     private static int ComputeRefreshBatchSize(int totalCount, int minBatchSize, int maxBatchSize)
     {
-        if (totalCount <= 0)
-        {
-            return 0;
-        }
-
-        var scaled = totalCount / 20;
-        return Math.Clamp(scaled, minBatchSize, maxBatchSize);
-    }
-
-    private static IReadOnlyList<T> GetVisibleDataGridItems<T>(DataGrid grid) where T : class
-    {
-        var indexedItems = new List<(int Index, T Item)>();
-        foreach (var row in FindVisualChildren<DataGridRow>(grid))
-        {
-            if (!row.IsVisible)
-            {
-                continue;
-            }
-
-            var index = row.GetIndex();
-            if (index < 0 || index >= grid.Items.Count)
-            {
-                continue;
-            }
-
-            if (grid.Items[index] is T item)
-            {
-                indexedItems.Add((index, item));
-            }
-        }
-
-        if (indexedItems.Count <= 1)
-        {
-            return indexedItems.Select(x => x.Item).ToArray();
-        }
-
-        indexedItems.Sort((a, b) => a.Index.CompareTo(b.Index));
-        var deduplicated = new List<T>(indexedItems.Count);
-        var lastIndex = -1;
-        foreach (var entry in indexedItems)
-        {
-            if (entry.Index == lastIndex)
-            {
-                continue;
-            }
-
-            deduplicated.Add(entry.Item);
-            lastIndex = entry.Index;
-        }
-
-        return deduplicated;
-    }
-
-    private static T? FindAncestor<T>(DependencyObject? current) where T : DependencyObject
-    {
-        while (current is not null)
-        {
-            if (current is T typed)
-            {
-                return typed;
-            }
-
-            current = VisualTreeHelper.GetParent(current);
-        }
-
-        return null;
-    }
-
-    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject? parent) where T : DependencyObject
-    {
-        if (parent is null)
-        {
-            yield break;
-        }
-
-        var childCount = VisualTreeHelper.GetChildrenCount(parent);
-        for (var i = 0; i < childCount; i++)
-        {
-            var child = VisualTreeHelper.GetChild(parent, i);
-            if (child is T typedChild)
-            {
-                yield return typedChild;
-            }
-
-            foreach (var descendant in FindVisualChildren<T>(child))
-            {
-                yield return descendant;
-            }
-        }
+        return RefreshBatchSizer.Compute(totalCount, minBatchSize, maxBatchSize);
     }
 
     private static string FormatValue(object value)
     {
-        return value switch
-        {
-            float f => f.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
-            double d => d.ToString("0.######", System.Globalization.CultureInfo.InvariantCulture),
-            _ => Convert.ToString(value, System.Globalization.CultureInfo.InvariantCulture) ?? string.Empty
-        };
+        return ValueTextFormatter.Format(value);
     }
 
     protected override void OnClosed(EventArgs e)
