@@ -1,0 +1,87 @@
+<Window x:Class="MemoryScanner.Windows.PointerMetadataWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pointer Metadata"
+        Height="620"
+        Width="980"
+        MinHeight="480"
+        MinWidth="820"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,10">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="24"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Orientation="Vertical">
+                <TextBlock Text="Entry" FontWeight="SemiBold"/>
+                <TextBlock Text="Captured" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                <TextBlock Text="Source Expression" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Vertical">
+                <TextBlock x:Name="EntryNameText" Text="-"/>
+                <TextBlock x:Name="CapturedAtText" Margin="0,8,0,0" Text="-"/>
+                <TextBlock x:Name="SourceExpressionText" Margin="0,8,0,0" Text="-" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="3" Orientation="Vertical">
+                <TextBlock Text="Captured Base" FontWeight="SemiBold"/>
+                <TextBlock Text="Captured Final Address" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                <TextBlock Text="Captured Final Value" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="4" Orientation="Vertical">
+                <TextBlock x:Name="CapturedBaseText" Text="-"/>
+                <TextBlock x:Name="CapturedFinalAddressText" Margin="0,8,0,0" Text="-"/>
+                <TextBlock x:Name="CapturedFinalValueText" Margin="0,8,0,0" Text="-"/>
+            </StackPanel>
+        </Grid>
+
+        <TextBlock Grid.Row="1"
+                   Margin="0,0,0,8"
+                   Text="Captured pointer-chain stages"
+                   FontSize="15"
+                   FontWeight="SemiBold"/>
+
+        <DataGrid x:Name="StageGrid"
+                  Grid.Row="2"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  IsReadOnly="True"
+                  HeadersVisibility="Column"
+                  SelectionMode="Single"
+                  SelectionUnit="FullRow"
+                  EnableRowVirtualization="True"
+                  EnableColumnVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Depth" Binding="{Binding DepthIndex}" Width="0.7*"/>
+                <DataGridTextColumn Header="Read Address" Binding="{Binding ReadAddressText}" Width="1.8*"/>
+                <DataGridTextColumn Header="Pointer Value" Binding="{Binding PointerValueText}" Width="1.8*"/>
+                <DataGridTextColumn Header="Offset" Binding="{Binding OffsetText}" Width="1*"/>
+                <DataGridTextColumn Header="Resolved Address" Binding="{Binding ResolvedAddressText}" Width="1.8*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <StackPanel Grid.Row="3"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,10,0,0">
+            <Button Width="100" Height="30" Content="Close" Click="Close_OnClick" IsDefault="True" IsCancel="True"/>
+        </StackPanel>
+    </Grid>
+</Window>

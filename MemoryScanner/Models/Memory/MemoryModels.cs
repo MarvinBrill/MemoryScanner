@@ -75,6 +75,7 @@ public sealed class WatchEntry : INotifyPropertyChanged
     public string PointerBaseModuleName { get; set; } = string.Empty;
     public ulong PointerBaseModuleOffset { get; set; }
     public ObservableCollection<int> Offsets { get; set; } = new();
+    public PointerRepairMetadata? PointerRepairMetadata { get; set; }
 
     public string DisplayAddress
     {
@@ -139,6 +140,25 @@ public sealed class WatchEntry : INotifyPropertyChanged
     {
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
+}
+
+public sealed class PointerRepairMetadata
+{
+    public DateTime CapturedAtUtc { get; set; } = DateTime.UtcNow;
+    public string SourceExpression { get; set; } = string.Empty;
+    public ulong CapturedBaseAddress { get; set; }
+    public ulong CapturedFinalAddress { get; set; }
+    public string CapturedFinalValueText { get; set; } = string.Empty;
+    public List<PointerRepairStageSnapshot> Stages { get; set; } = new();
+}
+
+public sealed class PointerRepairStageSnapshot
+{
+    public int DepthIndex { get; set; }
+    public ulong ReadAddress { get; set; }
+    public ulong PointerValue { get; set; }
+    public int Offset { get; set; }
+    public ulong ResolvedAddress { get; set; }
 }
 
 public sealed class ScanResult

@@ -89,6 +89,7 @@
                               BorderThickness="0"
                               ScrollViewer.ScrollChanged="WatchGrid_OnScrollChanged"
                               PreviewMouseLeftButtonDown="WatchGrid_OnPreviewMouseLeftButtonDown"
+                              PreviewMouseRightButtonDown="WatchGrid_OnPreviewMouseRightButtonDown"
                               MouseMove="WatchGrid_OnMouseMove"
                               DragOver="WatchGrid_OnDragOver"
                               Drop="WatchGrid_OnDrop"
@@ -108,17 +109,19 @@
                             </Style>
                         </DataGrid.RowStyle>
                         <DataGrid.ContextMenu>
-                            <ContextMenu>
+                            <ContextMenu Opened="WatchGridContextMenu_OnOpened">
                                 <MenuItem Header="Edit Name..." Click="EditWatchName_OnClick"/>
                                 <MenuItem Header="Edit Address/Pointer..." Click="EditWatchAddressPointer_OnClick"/>
                                 <MenuItem Header="Edit Data Type..." Click="EditWatchDataType_OnClick"/>
                                 <MenuItem Header="Write Value..." Click="WriteValueFromContext_OnClick"/>
                                 <MenuItem Header="Copy Address" Click="CopyWatchAddress_OnClick"/>
                                 <Separator/>
-                            <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
-                            <MenuItem Header="Repair Pointer Base..." Click="RepairPointerBaseFromWatch_OnClick"/>
-                            <MenuItem Header="Recalculate Pointer Base..." Click="RecalculatePointerBaseFromWatch_OnClick"/>
-                            <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromWatch_OnClick"/>
+                                <MenuItem Header="Pointer-scan for this address" Click="PointerScanForSelected_OnClick"/>
+                                <MenuItem x:Name="RepairPointerMenuItem" Header="Repair Pointer..." Click="RepairPointerFromWatch_OnClick"/>
+                                <MenuItem x:Name="ShowPointerMetadataMenuItem" Header="Show Pointer Metadata..." Click="ShowPointerMetadataFromWatch_OnClick"/>
+                                <MenuItem x:Name="RepairPointerBaseMenuItem" Header="Repair Pointer Base..." Click="RepairPointerBaseFromWatch_OnClick"/>
+                                <MenuItem x:Name="RecalculatePointerBaseMenuItem" Header="Recalculate Pointer Base..." Click="RecalculatePointerBaseFromWatch_OnClick"/>
+                                <MenuItem Header="Show Nearby Addresses" Click="ShowNearbyAddressesFromWatch_OnClick"/>
                                 <MenuItem Header="Open Memory Viewer" Click="OpenMemoryViewerFromWatch_OnClick"/>
                                 <MenuItem Header="Find out what writes/accesses this address" Click="FindWriteAccessFromWatch_OnClick"/>
                             </ContextMenu>

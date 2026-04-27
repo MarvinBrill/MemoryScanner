@@ -7,6 +7,7 @@ using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.IO;
 using System.Runtime.CompilerServices;
+using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
 using System.Windows.Controls;
@@ -14,6 +15,7 @@ using System.Windows.Controls.Primitives;
 using System.Windows.Input;
 using System.Windows.Media;
 using System.Windows.Threading;
+using System.Buffers.Binary;
 
 namespace MemoryScanner;
 
@@ -303,7 +305,10 @@ public partial class MainWindow : Window
         entry.PointerBaseModuleName = edited.PointerBaseModuleName;
         entry.PointerBaseModuleOffset = edited.PointerBaseModuleOffset;
         entry.Offsets = new ObservableCollection<int>(edited.Offsets);
+        entry.PointerRepairMetadata = edited.PointerRepairMetadata;
         entry.Status = "Unknown";
+
+        RefreshPointerRepairMetadata(entry);
 
         UpdateWatchDisplayForCurrentState(entry);
         WatchGrid.Items.Refresh();
@@ -329,6 +334,7 @@ public partial class MainWindow : Window
 
         entry.DataType = selectedType.Value;
         entry.Status = "Unknown";
+        RefreshPointerRepairMetadata(entry);
         WatchGrid.Items.Refresh();
 
         if (_memoryAccessor.IsAttached)
@@ -391,6 +397,11 @@ public partial class MainWindow : Window
     private bool HasPointerOffsets(WatchEntry entry)
     {
         return entry.Offsets is { Count: > 0 };
+    }
+
+    private bool IsRepairablePointerEntry(WatchEntry entry)
+    {
+        return entry.Kind == WatchEntryKind.PointerChain && HasPointerOffsets(entry);
     }
 
     private string FormatPointerBaseForDisplay(WatchEntry entry)
@@ -661,6 +672,28 @@ public partial class MainWindow : Window
         {
             _watchDragSourceEntry = entry;
         }
+    }
+
+    private void WatchGrid_OnPreviewMouseRightButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        var source = e.OriginalSource as DependencyObject;
+        var row = DataGridVisualUtilities.FindAncestor<DataGridRow>(source);
+        if (row?.DataContext is WatchEntry entry)
+        {
+            WatchGrid.SelectedItem = entry;
+        }
+    }
+
+    private void WatchGridContextMenu_OnOpened(object sender, RoutedEventArgs e)
+    {
+        var selectedEntry = WatchGrid.SelectedItem as WatchEntry;
+        var canRepairBase = selectedEntry is not null && TryCreatePointerRepairSeed(selectedEntry, out _, out _, out _);
+        var hasRepairablePointerOffsets = selectedEntry is not null && IsRepairablePointerEntry(selectedEntry);
+
+        RepairPointerMenuItem.Visibility = hasRepairablePointerOffsets ? Visibility.Visible : Visibility.Collapsed;
+        ShowPointerMetadataMenuItem.Visibility = hasRepairablePointerOffsets ? Visibility.Visible : Visibility.Collapsed;
+        RepairPointerBaseMenuItem.Visibility = canRepairBase ? Visibility.Visible : Visibility.Collapsed;
+        RecalculatePointerBaseMenuItem.Visibility = canRepairBase ? Visibility.Visible : Visibility.Collapsed;
     }
 
     private void WatchGrid_OnMouseMove(object sender, MouseEventArgs e)
@@ -1197,6 +1230,93 @@ public partial class MainWindow : Window
             dialog.SelectedDataType);
     }
 
+    private void RepairPointerFromWatch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (WatchGrid.SelectedItem is not WatchEntry selected || !IsRepairablePointerEntry(selected))
+        {
+            MessageBox.Show(this,
+                "Pointer repair is available only for pointer chains with one or more offsets.",
+                "Not Supported",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (!EnsurePointerRepairMetadata(selected))
+        {
+            MessageBox.Show(this,
+                "No pointer metadata is available yet. Re-import the pointer from Pointer Scanner or keep the process attached so MemoryScanner can capture the pointer chain.",
+                "Metadata Missing",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        if (!TryCreatePointerRepairSeed(selected, out var currentBaseAddress, out var offsets, out var pointerSizeHint))
+        {
+            return;
+        }
+
+        if (!_memoryAccessor.TryResolveWatchAddress(selected, out var currentResolvedAddress, out _))
+        {
+            currentResolvedAddress = 0;
+        }
+
+        var dialog = new PointerRepairWindow(
+            _memoryAccessor,
+            selected,
+            selected.PointerRepairMetadata!,
+            currentBaseAddress,
+            offsets,
+            pointerSizeHint,
+            currentResolvedAddress)
+        {
+            Owner = this
+        };
+
+        if (dialog.ShowDialog() != true || !dialog.SelectedBaseAddress.HasValue)
+        {
+            return;
+        }
+
+        ApplyPointerRepairResult(
+            selected,
+            dialog.SelectedBaseAddress.Value,
+            offsets,
+            dialog.SelectedPointerSizeBytes > 0 ? dialog.SelectedPointerSizeBytes : pointerSizeHint,
+            dialog.SelectedDataType);
+    }
+
+    private void ShowPointerMetadataFromWatch_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (WatchGrid.SelectedItem is not WatchEntry selected || !IsRepairablePointerEntry(selected))
+        {
+            return;
+        }
+
+        if (!EnsurePointerRepairMetadata(selected))
+        {
+            MessageBox.Show(this,
+                "No pointer metadata is available for this entry yet.",
+                "Metadata Missing",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+            return;
+        }
+
+        var dialog = new PointerMetadataWindow(selected, selected.PointerRepairMetadata!)
+        {
+            Owner = this
+        };
+        dialog.ShowDialog();
+    }
+
     private void RecalculatePointerBaseFromWatch_OnClick(object sender, RoutedEventArgs e)
     {
         if (!_memoryAccessor.IsAttached)
@@ -1287,6 +1407,7 @@ public partial class MainWindow : Window
         }
 
         UpdatePointerBaseModuleReference(targetEntry, repairedBaseAddress);
+        RefreshPointerRepairMetadata(targetEntry);
 
         targetEntry.Status = "Unknown";
         UpdateWatchDisplayForCurrentState(targetEntry);
@@ -1307,6 +1428,189 @@ public partial class MainWindow : Window
         entry.PointerBaseModuleName = module.Name;
         entry.PointerBaseModuleOffset = pointerBaseAddress - module.Base;
     }
+
+    private bool EnsurePointerRepairMetadata(WatchEntry entry)
+    {
+        if (!IsRepairablePointerEntry(entry))
+        {
+            entry.PointerRepairMetadata = null;
+            return false;
+        }
+
+        if (entry.PointerRepairMetadata is not null)
+        {
+            return true;
+        }
+
+        if (!_memoryAccessor.IsAttached)
+        {
+            return false;
+        }
+
+        return TryCapturePointerRepairMetadata(entry, out _);
+    }
+
+    private void RefreshPointerRepairMetadata(WatchEntry entry)
+    {
+        if (!IsRepairablePointerEntry(entry))
+        {
+            entry.PointerRepairMetadata = null;
+            return;
+        }
+
+        if (!_memoryAccessor.IsAttached)
+        {
+            return;
+        }
+
+        TryCapturePointerRepairMetadata(entry, out _);
+    }
+
+    private bool TryCapturePointerRepairMetadata(WatchEntry entry, out PointerRepairMetadata metadata)
+    {
+        metadata = new PointerRepairMetadata();
+        if (!_memoryAccessor.IsAttached || !IsRepairablePointerEntry(entry))
+        {
+            return false;
+        }
+
+        if (!TryGetEffectivePointerBaseAddress(entry, out var pointerBaseAddress))
+        {
+            return false;
+        }
+
+        var offsets = entry.Offsets.ToArray();
+        var pointerSizeBytes = ResolvePointerSizeBytesForEntry(entry.PointerSizeBytes);
+        if (pointerSizeBytes != 4 && pointerSizeBytes != 8)
+        {
+            return false;
+        }
+
+        var stages = new List<PointerRepairStageSnapshot>(offsets.Length);
+        var currentAddress = pointerBaseAddress;
+
+        for (var depthIndex = 0; depthIndex < offsets.Length; depthIndex++)
+        {
+            if (!_memoryAccessor.TryReadBytes(currentAddress, pointerSizeBytes, out var raw) || raw.Length < pointerSizeBytes)
+            {
+                return false;
+            }
+
+            ulong pointerValue;
+            ulong resolvedAddress;
+            var offset = offsets[depthIndex];
+            if (!TryResolvePointerStep(raw, pointerSizeBytes, offset, out pointerValue, out resolvedAddress))
+            {
+                return false;
+            }
+
+            stages.Add(new PointerRepairStageSnapshot
+            {
+                DepthIndex = depthIndex + 1,
+                ReadAddress = currentAddress,
+                PointerValue = pointerValue,
+                Offset = offset,
+                ResolvedAddress = resolvedAddress
+            });
+
+            currentAddress = resolvedAddress;
+        }
+
+        var finalValueText = UnavailableValueText;
+        if (_memoryAccessor.TryReadValue(currentAddress, entry.DataType, out var finalValue))
+        {
+            finalValueText = FormatValue(finalValue);
+        }
+
+        metadata = new PointerRepairMetadata
+        {
+            CapturedAtUtc = DateTime.UtcNow,
+            SourceExpression = BuildPointerRepairSourceExpression(entry),
+            CapturedBaseAddress = pointerBaseAddress,
+            CapturedFinalAddress = currentAddress,
+            CapturedFinalValueText = finalValueText,
+            Stages = stages
+        };
+
+        entry.PointerRepairMetadata = metadata;
+        return true;
+    }
+
+    private bool TryGetEffectivePointerBaseAddress(WatchEntry entry, out ulong pointerBaseAddress)
+    {
+        pointerBaseAddress = 0;
+        if (entry.Kind != WatchEntryKind.PointerChain)
+        {
+            return false;
+        }
+
+        pointerBaseAddress = entry.PointerBaseAddress;
+        if (!_memoryAccessor.IsAttached || string.IsNullOrWhiteSpace(entry.PointerBaseModuleName))
+        {
+            return true;
+        }
+
+        var moduleByName = _memoryAccessor.Modules.FirstOrDefault(m =>
+            string.Equals(m.Name, entry.PointerBaseModuleName, StringComparison.OrdinalIgnoreCase));
+        if (moduleByName is null)
+        {
+            return true;
+        }
+
+        pointerBaseAddress = moduleByName.Base + entry.PointerBaseModuleOffset;
+        return true;
+    }
+
+    private string BuildPointerRepairSourceExpression(WatchEntry entry)
+    {
+        var baseText = !string.IsNullOrWhiteSpace(entry.PointerBaseModuleName)
+            ? $"{entry.PointerBaseModuleName}+0x{entry.PointerBaseModuleOffset:X}"
+            : $"0x{entry.PointerBaseAddress:X}";
+
+        if (!HasPointerOffsets(entry))
+        {
+            return baseText;
+        }
+
+        return $"{baseText} [{string.Join(", ", entry.Offsets.Select(FormatSignedOffsetHex))}]";
+    }
+
+    private bool TryResolvePointerStep(byte[] rawPointerBytes, int pointerSizeBytes, int offset, out ulong pointerValue, out ulong resolvedAddress)
+    {
+        pointerValue = 0;
+        resolvedAddress = 0;
+
+        if (pointerSizeBytes == 4)
+        {
+            var pointer32 = BinaryPrimitives.ReadUInt32LittleEndian(rawPointerBytes.AsSpan(0, 4));
+            var next = (long)pointer32 + offset;
+            if (next < 0 || next > uint.MaxValue)
+            {
+                return false;
+            }
+
+            pointerValue = pointer32;
+            resolvedAddress = unchecked((uint)next);
+            return true;
+        }
+
+        pointerValue = BinaryPrimitives.ReadUInt64LittleEndian(rawPointerBytes.AsSpan(0, 8));
+        resolvedAddress = unchecked((ulong)((long)pointerValue + offset));
+        return true;
+    }
+
+    private int ResolvePointerSizeBytesForEntry(int pointerSizeHint)
+    {
+        if (pointerSizeHint == 4 || pointerSizeHint == 8)
+        {
+            return pointerSizeHint;
+        }
+
+        return IsWow64Process(_memoryAccessor.Process.Handle, out var wow64Process) && wow64Process ? 4 : 8;
+    }
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    private static extern bool IsWow64Process(IntPtr processHandle, out bool wow64Process);
 
     private void OpenPointerScanner_OnClick(object sender, RoutedEventArgs e)
     {
@@ -1359,6 +1663,7 @@ public partial class MainWindow : Window
             var dialog = new AddWatchEntryWindow(path, selectedType, processName: GetAttachedProcessName(), modules: GetAttachedModuleSnapshot()) { Owner = this };
             if (dialog.ShowDialog() == true && dialog.CreatedEntry is not null)
             {
+                RefreshPointerRepairMetadata(dialog.CreatedEntry);
                 AddWatchEntry(dialog.CreatedEntry);
             }
         }
@@ -1650,6 +1955,14 @@ public partial class MainWindow : Window
 
         try
         {
+            if (_memoryAccessor.IsAttached)
+            {
+                foreach (var entry in _watchEntries)
+                {
+                    RefreshPointerRepairMetadata(entry);
+                }
+            }
+
             _profileStorageService.Save(filePath, processName, _watchEntries);
             _currentWatchListFilePath = filePath;
             UpdateWindowTitle();

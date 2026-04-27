@@ -1,0 +1,143 @@
+<Window x:Class="MemoryScanner.Windows.PointerRepairWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Repair Pointer"
+        Height="760"
+        Width="1180"
+        MinHeight="620"
+        MinWidth="980"
+        WindowStartupLocation="CenterOwner">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+
+        <Grid Grid.Row="0" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="24"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="*"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Orientation="Vertical">
+                <TextBlock Text="Entry" FontWeight="SemiBold"/>
+                <TextBlock Text="Current Base" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                <TextBlock Text="Captured Source" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Vertical">
+                <TextBlock x:Name="EntryNameText" Text="-"/>
+                <TextBlock x:Name="CurrentBaseText" Margin="0,8,0,0" Text="-"/>
+                <TextBlock x:Name="CapturedSourceText" Margin="0,8,0,0" Text="-" TextWrapping="Wrap"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="3" Orientation="Vertical">
+                <TextBlock Text="Captured Final Address" FontWeight="SemiBold"/>
+                <TextBlock Text="Current Target Address" FontWeight="SemiBold" Margin="0,8,0,0"/>
+                <TextBlock Text="Expected Value" FontWeight="SemiBold" Margin="0,8,0,0"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="4" Orientation="Vertical">
+                <TextBlock x:Name="CapturedFinalAddressText" Text="-"/>
+                <TextBox x:Name="TargetAddressText" Margin="0,6,0,0" Height="28" VerticalContentAlignment="Center"/>
+                <TextBox x:Name="ExpectedValueText" Margin="0,6,0,0" Height="28" VerticalContentAlignment="Center"/>
+            </StackPanel>
+        </Grid>
+
+        <Grid Grid.Row="1" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="140"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="120"/>
+                <ColumnDefinition Width="10"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="180"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock Grid.Column="0" VerticalAlignment="Center" Margin="0,0,8,0" Text="Data Type"/>
+            <ComboBox x:Name="DataTypeBox" Grid.Column="1" Height="28"/>
+
+            <TextBlock Grid.Column="3" VerticalAlignment="Center" Margin="0,0,8,0" Text="Range (+/- bytes)"/>
+            <TextBox x:Name="RangeText" Grid.Column="4" Height="28" VerticalContentAlignment="Center" Text="0x200000"/>
+
+            <TextBlock Grid.Column="6" VerticalAlignment="Center" Margin="0,0,8,0" Text="Step"/>
+            <TextBox x:Name="StepText" Grid.Column="7" Height="28" VerticalContentAlignment="Center" Text="4"/>
+
+            <TextBlock Grid.Column="9" VerticalAlignment="Center" Margin="0,0,8,0" Text="Max Results"/>
+            <TextBox x:Name="MaxResultsText" Grid.Column="10" Height="28" VerticalContentAlignment="Center" Text="250"/>
+
+            <TextBlock Grid.Column="12" VerticalAlignment="Center" Margin="0,0,8,0" Text="Offsets"/>
+            <TextBlock x:Name="OffsetsText" Grid.Column="13" VerticalAlignment="Center" Text="-" TextTrimming="CharacterEllipsis"/>
+        </Grid>
+
+        <Grid Grid.Row="2" Margin="0,0,0,8">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <TextBlock x:Name="HintText"
+                       Grid.Column="0"
+                       VerticalAlignment="Center"
+                       Foreground="#FF555555"
+                       Text="Scores prefer candidates that keep the saved pointer stages and final target layout intact."/>
+
+            <Button x:Name="StartScanButton" Grid.Column="1" Width="110" Height="30" Margin="0,0,8,0" Content="Scan" Click="StartScan_OnClick"/>
+            <Button x:Name="CancelScanButton" Grid.Column="2" Width="100" Height="30" Content="Cancel" Click="CancelScan_OnClick" IsEnabled="False"/>
+        </Grid>
+
+        <DataGrid x:Name="ResultsGrid"
+                  Grid.Row="3"
+                  AutoGenerateColumns="False"
+                  CanUserAddRows="False"
+                  IsReadOnly="True"
+                  SelectionMode="Single"
+                  SelectionUnit="FullRow"
+                  EnableRowVirtualization="True"
+                  EnableColumnVirtualization="True"
+                  VirtualizingPanel.IsVirtualizing="True"
+                  VirtualizingPanel.VirtualizationMode="Recycling"
+                  ScrollViewer.CanContentScroll="True">
+            <DataGrid.Columns>
+                <DataGridTextColumn Header="Base Address" Binding="{Binding BaseAddressText}" Width="1.7*"/>
+                <DataGridTextColumn Header="Resolved Address" Binding="{Binding ResolvedAddressText}" Width="1.7*"/>
+                <DataGridTextColumn Header="Value" Binding="{Binding ValueText}" Width="1.2*"/>
+                <DataGridTextColumn Header="Score" Binding="{Binding Score}" Width="0.9*"/>
+                <DataGridTextColumn Header="Stage Matches" Binding="{Binding StageMatchSummary}" Width="1.1*"/>
+                <DataGridTextColumn Header="Notes" Binding="{Binding Notes}" Width="2.2*"/>
+            </DataGrid.Columns>
+        </DataGrid>
+
+        <Grid Grid.Row="4" Margin="0,8,0,0">
+            <Grid.ColumnDefinitions>
+                <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="Auto"/>
+            </Grid.ColumnDefinitions>
+
+            <StackPanel Grid.Column="0" Orientation="Horizontal" VerticalAlignment="Center">
+                <ProgressBar x:Name="ScanProgressBar" Width="260" Height="18" Minimum="0" Maximum="100" Value="0"/>
+                <TextBlock x:Name="StatusText" Margin="8,0,0,0" VerticalAlignment="Center" Text="Idle"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="1" Orientation="Horizontal" HorizontalAlignment="Right">
+                <Button Content="Apply Selected" Width="130" Height="30" Margin="0,0,8,0" Click="ApplySelected_OnClick"/>
+                <Button Content="Close" Width="100" Height="30" Click="Close_OnClick"/>
+            </StackPanel>
+        </Grid>
+    </Grid>
+</Window>

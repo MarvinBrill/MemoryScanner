@@ -1,12 +1,7 @@
 {
   "Version": 1,
   "WorkspaceRootPath": "D:\\GitHub-Projekte\\MemoryScanner\\MemoryScanner\\",
-  "Documents": [
-    {
-      "AbsoluteMoniker": "D:0:0:{BDA3C392-1AE6-445A-9CD6-4322DD5BF330}|MemoryScanner.csproj|d:\\github-projekte\\memoryscanner\\memoryscanner\\core\\addressscanning\\service\\scanservice.types.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}",
-      "RelativeMoniker": "D:0:0:{BDA3C392-1AE6-445A-9CD6-4322DD5BF330}|MemoryScanner.csproj|solutionrelative:core\\addressscanning\\service\\scanservice.types.cs||{A6C744A8-0E4A-4FC6-886A-064283054674}"
-    }
-  ],
+  "Documents": [],
   "DocumentGroupContainers": [
     {
       "Orientation": 0,
@@ -14,24 +9,11 @@
       "DocumentGroups": [
         {
           "DockedWidth": 226,
-          "SelectedChildIndex": 1,
+          "SelectedChildIndex": -1,
           "Children": [
             {
               "$type": "Bookmark",
               "Name": "ST:0:0:{eefa5220-e298-11d0-8f78-00a0c9110057}"
-            },
-            {
-              "$type": "Document",
-              "DocumentIndex": 0,
-              "Title": "ScanService.Types.cs",
-              "DocumentMoniker": "D:\\GitHub-Projekte\\MemoryScanner\\MemoryScanner\\Core\\AddressScanning\\Service\\ScanService.Types.cs",
-              "RelativeDocumentMoniker": "Core\\AddressScanning\\Service\\ScanService.Types.cs",
-              "ToolTip": "D:\\GitHub-Projekte\\MemoryScanner\\MemoryScanner\\Core\\AddressScanning\\Service\\ScanService.Types.cs",
-              "RelativeToolTip": "Core\\AddressScanning\\Service\\ScanService.Types.cs",
-              "ViewState": "AgIAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA==",
-              "Icon": "ae27a6b0-e345-4288-96df-5eaf394ee369.000738|",
-              "WhenOpened": "2026-04-23T15:51:40.578Z",
-              "EditorCaption": ""
             }
           ]
         }
