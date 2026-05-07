@@ -17,6 +17,7 @@ public sealed class PointerRescanRequest
     public ulong Address { get; init; }
     public MemoryDataType ValueDataType { get; init; }
     public object? Value { get; init; }
+    public string ValueTextRaw { get; init; } = string.Empty;
 }
 
 public partial class PointerRescanWindow : Window
@@ -89,7 +90,8 @@ public partial class PointerRescanWindow : Window
         {
             Mode = PointerRescanMode.Value,
             ValueDataType = valueType,
-            Value = parsedValue
+            Value = parsedValue,
+            ValueTextRaw = ValueText.Text?.Trim() ?? string.Empty
         };
 
         DialogResult = true;

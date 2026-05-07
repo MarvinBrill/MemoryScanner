@@ -31,11 +31,113 @@ public sealed partial class ScanService
             MemoryDataType.Int16 => short.TryParse(trimmed, out var s16) ? Assign(s16, out value) : false,
             MemoryDataType.Int32 => int.TryParse(trimmed, out var i) ? Assign(i, out value) : false,
             MemoryDataType.Int64 => long.TryParse(trimmed, out var l) ? Assign(l, out value) : false,
-            MemoryDataType.Float => float.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var f) ? Assign(f, out value) : false,
-            MemoryDataType.Double => double.TryParse(trimmed, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out var d) ? Assign(d, out value) : false,
+            MemoryDataType.Float => TryParseFloatValue(trimmed, out value),
+            MemoryDataType.Double => TryParseDoubleValue(trimmed, out value),
             MemoryDataType.String => false,
             _ => false
         };
+    }
+
+    private static bool TryParseFloatValue(string text, out object value)
+    {
+        value = 0f;
+        if (TryParseFloatingValue(text, out float parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryParseDoubleValue(string text, out object value)
+    {
+        value = 0d;
+        if (TryParseFloatingValue(text, out double parsed))
+        {
+            value = parsed;
+            return true;
+        }
+
+        return false;
+    }
+
+    private static bool TryParseFloatingValue(string text, out float value)
+    {
+        value = 0;
+        if (float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        if (float.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out value))
+        {
+            return true;
+        }
+
+        return TryParseFloatingValueWithSwappedSeparator(text, out value);
+    }
+
+    private static bool TryParseFloatingValue(string text, out double value)
+    {
+        value = 0;
+        if (double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value))
+        {
+            return true;
+        }
+
+        if (double.TryParse(text, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out value))
+        {
+            return true;
+        }
+
+        return TryParseFloatingValueWithSwappedSeparator(text, out value);
+    }
+
+    private static bool TryParseFloatingValueWithSwappedSeparator(string text, out float value)
+    {
+        value = 0;
+        var normalized = NormalizeFloatingSeparators(text);
+        if (normalized is null)
+        {
+            return false;
+        }
+
+        return float.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value)
+            || float.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out value);
+    }
+
+    private static bool TryParseFloatingValueWithSwappedSeparator(string text, out double value)
+    {
+        value = 0;
+        var normalized = NormalizeFloatingSeparators(text);
+        if (normalized is null)
+        {
+            return false;
+        }
+
+        return double.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out value)
+            || double.TryParse(normalized, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.CurrentCulture, out value);
+    }
+
+    private static string? NormalizeFloatingSeparators(string text)
+    {
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return null;
+        }
+
+        if (text.IndexOf(',') >= 0 && text.IndexOf('.') < 0)
+        {
+            return text.Replace(',', '.');
+        }
+
+        if (text.IndexOf('.') >= 0 && text.IndexOf(',') < 0)
+        {
+            return text.Replace('.', ',');
+        }
+
+        return null;
     }
 
     private static bool Assign<T>(T data, out object value)

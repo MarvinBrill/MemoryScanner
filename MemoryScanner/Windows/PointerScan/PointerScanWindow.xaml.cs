@@ -1658,9 +1658,9 @@ public partial class PointerScanWindow : Window
             }
             else if (request.Value is not null
                 && TryResolvePointerValue(path, request.ValueDataType, out var rawValue, out _, out _)
-                && TryCompareValuesByType(request.ValueDataType, rawValue, request.Value, out var comparison))
+                && ValuesMatchForRescan(request, rawValue))
             {
-                keep = comparison == 0;
+                keep = true;
             }
 
             if (keep)
@@ -1687,6 +1687,103 @@ public partial class PointerScanWindow : Window
         });
 
         return kept;
+    }
+
+    private static bool ValuesMatchForRescan(PointerRescanRequest request, object currentValue)
+    {
+        if (request.Value is null)
+        {
+            return false;
+        }
+
+        return request.ValueDataType switch
+        {
+            MemoryDataType.Float => TryMatchFloatForRescan(currentValue, request.Value, request.ValueTextRaw),
+            MemoryDataType.Double => TryMatchDoubleForRescan(currentValue, request.Value, request.ValueTextRaw),
+            _ => TryCompareValuesByType(request.ValueDataType, currentValue, request.Value, out var comparison) && comparison == 0
+        };
+    }
+
+    private static bool TryMatchFloatForRescan(object currentValue, object expectedValue, string? rawInput)
+    {
+        if (!TryCoerce(currentValue, out float currentFloat) || !TryCoerce(expectedValue, out float expectedFloat))
+        {
+            return false;
+        }
+
+        var currentDisplay = ValueTextFormatter.Format(currentFloat);
+        var expectedDisplay = ValueTextFormatter.Format(expectedFloat);
+        if (string.Equals(currentDisplay, expectedDisplay, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var tolerance = ComputeFloatingTolerance(rawInput, defaultTolerance: 0.000001f, maxDisplayPrecision: 6);
+        return Math.Abs(currentFloat - expectedFloat) <= tolerance;
+    }
+
+    private static bool TryMatchDoubleForRescan(object currentValue, object expectedValue, string? rawInput)
+    {
+        if (!TryCoerce(currentValue, out double currentDouble) || !TryCoerce(expectedValue, out double expectedDouble))
+        {
+            return false;
+        }
+
+        var currentDisplay = ValueTextFormatter.Format(currentDouble);
+        var expectedDisplay = ValueTextFormatter.Format(expectedDouble);
+        if (string.Equals(currentDisplay, expectedDisplay, StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var tolerance = ComputeFloatingTolerance(rawInput, defaultTolerance: 0.000000000001d, maxDisplayPrecision: 6);
+        return Math.Abs(currentDouble - expectedDouble) <= tolerance;
+    }
+
+    private static double ComputeFloatingTolerance(string? rawInput, double defaultTolerance, int maxDisplayPrecision)
+    {
+        var fractionalDigits = CountFractionalDigits(rawInput);
+        if (fractionalDigits <= 0)
+        {
+            return defaultTolerance;
+        }
+
+        var normalizedDigits = Math.Min(fractionalDigits, maxDisplayPrecision);
+        return Math.Max(defaultTolerance, 0.5d * Math.Pow(10, -normalizedDigits));
+    }
+
+    private static int CountFractionalDigits(string? rawInput)
+    {
+        if (string.IsNullOrWhiteSpace(rawInput))
+        {
+            return 0;
+        }
+
+        var trimmed = rawInput.Trim();
+        var exponentIndex = trimmed.IndexOfAny(new[] { 'e', 'E' });
+        if (exponentIndex >= 0)
+        {
+            trimmed = trimmed[..exponentIndex];
+        }
+
+        var separatorIndex = Math.Max(trimmed.LastIndexOf('.'), trimmed.LastIndexOf(','));
+        if (separatorIndex < 0 || separatorIndex >= trimmed.Length - 1)
+        {
+            return 0;
+        }
+
+        var digits = 0;
+        for (var i = separatorIndex + 1; i < trimmed.Length; i++)
+        {
+            if (!char.IsDigit(trimmed[i]))
+            {
+                break;
+            }
+
+            digits++;
+        }
+
+        return digits;
     }
 
     private bool TryResolvePointerFinalAddress(PointerPath path, out ulong finalAddress)
