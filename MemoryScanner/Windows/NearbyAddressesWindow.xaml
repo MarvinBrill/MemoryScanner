@@ -13,6 +13,7 @@
             <Grid.RowDefinitions>
                 <RowDefinition Height="Auto"/>
                 <RowDefinition Height="Auto"/>
+                <RowDefinition Height="Auto"/>
             </Grid.RowDefinitions>
 
             <Grid Grid.Row="0">
@@ -51,6 +52,38 @@
             </Grid>
 
             <Grid Grid.Row="1" Margin="0,8,0,0">
+                <Grid.ColumnDefinitions>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="140"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="120"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="130"/>
+                    <ColumnDefinition Width="Auto"/>
+                    <ColumnDefinition Width="*"/>
+                </Grid.ColumnDefinitions>
+
+                <TextBlock Grid.Column="0" Text="Search Type" VerticalAlignment="Center"/>
+                <ComboBox x:Name="SearchDataTypeBox" Grid.Column="1" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+                <TextBlock Grid.Column="2" Text="Value" VerticalAlignment="Center"/>
+                <TextBox x:Name="SearchValueText" Grid.Column="3" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+                <TextBlock Grid.Column="4" Text="Range" VerticalAlignment="Center"/>
+                <TextBox x:Name="SearchRangeText" Grid.Column="5" Margin="6,0,12,0" VerticalAlignment="Center" Text="0x1000"/>
+
+                <TextBlock Grid.Column="6" Text="Direction" VerticalAlignment="Center"/>
+                <ComboBox x:Name="SearchDirectionBox" Grid.Column="7" Margin="6,0,12,0" VerticalAlignment="Center"/>
+
+                <Button x:Name="SearchNearbyButton" Grid.Column="8" Content="Search" Width="90" Height="30" Margin="0,0,12,0" Click="SearchNearby_OnClick"/>
+                <TextBlock x:Name="SearchStatusText" Grid.Column="9" Grid.ColumnSpan="3" VerticalAlignment="Center" Foreground="#FF444444" Text="Search starts from Center."/>
+            </Grid>
+
+            <Grid Grid.Row="2" Margin="0,8,0,0">
                 <Grid.ColumnDefinitions>
                     <ColumnDefinition Width="Auto"/>
                     <ColumnDefinition Width="130"/>

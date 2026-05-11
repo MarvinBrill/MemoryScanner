@@ -35,6 +35,7 @@ public partial class MainWindow : Window
     private readonly MemoryRegionEnumerator _regionEnumerator;
     private readonly ScanService _scanService;
     private readonly PointerScanService _pointerScanService;
+    private readonly PatternScanService _patternScanService;
     private readonly ProfileStorageService _profileStorageService;
     private readonly DispatcherTimer _refreshTimer;
     private readonly DispatcherTimer _scanResultRefreshTimer;
@@ -63,6 +64,7 @@ public partial class MainWindow : Window
         _regionEnumerator = new MemoryRegionEnumerator();
         _scanService = new ScanService(_memoryAccessor, _regionEnumerator);
         _pointerScanService = new PointerScanService(_memoryAccessor, _regionEnumerator);
+        _patternScanService = new PatternScanService(_memoryAccessor, _regionEnumerator);
         _profileStorageService = new ProfileStorageService();
 
         WatchGrid.ItemsSource = _watchEntries;
@@ -1640,6 +1642,22 @@ public partial class MainWindow : Window
         OpenPointerScannerWithAddress(initialAddress, initialType);
     }
 
+    private void OpenPatternScanner_OnClick(object sender, RoutedEventArgs e)
+    {
+        var patternWindow = new PatternScannerWindow(_patternScanService, _memoryAccessor)
+        {
+            Owner = this
+        };
+
+        patternWindow.TakeSelectedRequested += (_, items) =>
+        {
+            TakePatternResultsIntoWatchList(items);
+        };
+
+        patternWindow.Show();
+        patternWindow.Activate();
+    }
+
     private void OpenPointerScannerWithAddress(ulong address, MemoryDataType initialType, PointerScanOptions? initialOptions = null)
     {
         var pointerWindow = new PointerScanWindow(_pointerScanService, _memoryAccessor, address, initialType, initialOptions)
@@ -1666,6 +1684,22 @@ public partial class MainWindow : Window
                 RefreshPointerRepairMetadata(dialog.CreatedEntry);
                 AddWatchEntry(dialog.CreatedEntry);
             }
+        }
+    }
+
+    private void TakePatternResultsIntoWatchList(IReadOnlyList<PatternScannerWindow.PatternScanTakeItem> items)
+    {
+        foreach (var item in items)
+        {
+            var entry = new WatchEntry
+            {
+                Name = $"Address_{item.Address:X}",
+                Kind = WatchEntryKind.DirectAddress,
+                DirectAddress = item.Address,
+                DataType = item.DataType
+            };
+
+            AddWatchEntry(entry);
         }
     }
 

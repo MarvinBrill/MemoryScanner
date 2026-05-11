@@ -34,6 +34,7 @@
             </MenuItem>
             <MenuItem Header="_Tools" Style="{StaticResource TopLevelMenuItemStyle}">
                 <MenuItem Header="Pointer Scanner" Click="OpenPointerScanner_OnClick"/>
+                <MenuItem Header="Pattern Scanner" Click="OpenPatternScanner_OnClick"/>
             </MenuItem>
             <MenuItem Header="_Help" Style="{StaticResource TopLevelMenuItemStyle}">
                 <MenuItem Header="About MemoryScanner" Click="MenuAbout_OnClick"/>

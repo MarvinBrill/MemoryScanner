@@ -1,0 +1,101 @@
+<Window x:Class="MemoryScanner.Windows.PatternGeneralRulesWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Title="Pattern General Rules"
+        Height="410"
+        Width="520"
+        WindowStartupLocation="CenterOwner"
+        ResizeMode="NoResize">
+    <Grid Margin="12">
+        <Grid.RowDefinitions>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="Auto"/>
+            <RowDefinition Height="*"/>
+            <RowDefinition Height="Auto"/>
+        </Grid.RowDefinitions>
+        <Grid.ColumnDefinitions>
+            <ColumnDefinition Width="220"/>
+            <ColumnDefinition Width="*"/>
+        </Grid.ColumnDefinitions>
+
+        <TextBlock Grid.Row="0"
+                   Grid.Column="0"
+                   Margin="0,0,8,10"
+                   VerticalAlignment="Center"
+                   Text="Search Order"/>
+
+        <ComboBox x:Name="SearchOrderBox"
+                  Grid.Row="0"
+                  Grid.Column="1"
+                  Margin="0,0,0,10"
+                  SelectionChanged="SearchOrderBox_OnSelectionChanged"/>
+
+        <TextBlock Grid.Row="1"
+                   Grid.Column="0"
+                   Margin="0,0,8,10"
+                   VerticalAlignment="Center"
+                   Text="Search Focus"/>
+
+        <ComboBox x:Name="SearchFocusBox"
+                  Grid.Row="1"
+                  Grid.Column="1"
+                  Margin="0,0,0,10"/>
+
+        <TextBlock Grid.Row="2"
+                   Grid.Column="0"
+                   Margin="0,0,8,10"
+                   VerticalAlignment="Center"
+                   Text="Custom Start Percent"/>
+
+        <TextBox x:Name="CustomStartPercentText"
+                 Grid.Row="2"
+                 Grid.Column="1"
+                 Margin="0,0,0,10"/>
+
+        <CheckBox x:Name="StopAfterGapBox"
+                  Grid.Row="3"
+                  Grid.Column="0"
+                  Grid.ColumnSpan="2"
+                  Margin="0,0,0,10"
+                  Content="Stop after no more matches follow"
+                  Checked="StopAfterGapBox_OnCheckedChanged"
+                  Unchecked="StopAfterGapBox_OnCheckedChanged"/>
+
+        <TextBlock Grid.Row="4"
+                   Grid.Column="0"
+                   Margin="0,0,8,8"
+                   VerticalAlignment="Center"
+                   Text="Gap after last match (addresses)"/>
+
+        <TextBox x:Name="GapAddressesText"
+                 Grid.Row="4"
+                 Grid.Column="1"
+                 Margin="0,0,0,8"/>
+
+        <Border Grid.Row="5"
+                Grid.Column="0"
+                Grid.ColumnSpan="2"
+                Background="#FFF5F5F5"
+                BorderBrush="#FFDADADA"
+                BorderThickness="1"
+                Padding="8"
+                Margin="0,4,0,0">
+            <TextBlock TextWrapping="Wrap"
+                       Foreground="#FF333333"
+                       Text="When enabled, the scanner continues collecting repeated pattern hits. After the first hit, if no new match appears within the configured address gap, the scan stops early and shows the results found so far."/>
+        </Border>
+
+        <StackPanel Grid.Row="6"
+                    Grid.Column="0"
+                    Grid.ColumnSpan="2"
+                    Orientation="Horizontal"
+                    HorizontalAlignment="Right"
+                    Margin="0,12,0,0">
+            <Button Content="Cancel" Width="100" Height="30" Margin="0,0,8,0" Click="Cancel_OnClick"/>
+            <Button Content="Apply" Width="100" Height="30" Click="Apply_OnClick"/>
+        </StackPanel>
+    </Grid>
+</Window>

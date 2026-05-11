@@ -47,6 +47,12 @@ public partial class NearbyAddressesWindow : Window
     private readonly List<NearbyRow> _allRows = new();
     private NearbyValueFilter? _activeFilter;
 
+    private static readonly IReadOnlyList<NearbySearchDirectionOption> _searchDirectionOptions = new[]
+    {
+        new NearbySearchDirectionOption(NearbySearchDirection.Up, "Up"),
+        new NearbySearchDirectionOption(NearbySearchDirection.Down, "Down")
+    };
+
     public ObservableCollection<NearbyRow> Rows { get; } = new();
 
     public List<WatchEntry> SelectedEntries { get; private set; } = new();
@@ -75,6 +81,10 @@ public partial class NearbyAddressesWindow : Window
 
         DataTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
         DataTypeBox.SelectedItem = initialType;
+        SearchDataTypeBox.ItemsSource = MemoryDataTypeUiOrder.Ordered;
+        SearchDataTypeBox.SelectedItem = initialType;
+        SearchDirectionBox.ItemsSource = _searchDirectionOptions;
+        SearchDirectionBox.SelectedItem = _searchDirectionOptions[0];
         FilterConditionBox.ItemsSource = _valueFilterOptions;
         FilterConditionBox.SelectedItem = _valueFilterOptions.FirstOrDefault(x => x.Value == ScanComparison.Equal) ?? _valueFilterOptions.First();
 
@@ -143,6 +153,45 @@ public partial class NearbyAddressesWindow : Window
         ApplyFilterToVisibleRows();
         UpdateFilterStatusText();
         RefreshVisibleRowsOnly();
+    }
+
+    private void SearchNearby_OnClick(object sender, RoutedEventArgs e)
+    {
+        if (!_memoryAccessor.IsAttached)
+        {
+            MessageBox.Show(this, "Select a process first.", "No Process", MessageBoxButton.OK, MessageBoxImage.Information);
+            return;
+        }
+
+        if (SearchDataTypeBox.SelectedItem is not MemoryDataType searchType)
+        {
+            MessageBox.Show(this, "Select a search data type.", "Search", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!ScanService.TryParseValue(searchType, SearchValueText.Text, out var searchValue))
+        {
+            MessageBox.Show(this, "Enter a valid search value.", "Search", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        if (!TryParseUnsignedLong(SearchRangeText.Text, out var rangeBytes))
+        {
+            MessageBox.Show(this, "Enter a valid search range (hex or decimal).", "Search", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return;
+        }
+
+        var direction = (SearchDirectionBox.SelectedItem as NearbySearchDirectionOption)?.Direction ?? NearbySearchDirection.Up;
+        var foundAddress = FindNearbyValueAddress(_centerAddress, searchType, searchValue, SearchValueText.Text, rangeBytes, direction);
+        if (!foundAddress.HasValue)
+        {
+            MessageBox.Show(this, "No value found in the specified search range.", "Search", MessageBoxButton.OK, MessageBoxImage.Information);
+            SearchStatusText.Text = $"No match within {FormatRawAddress(rangeBytes)} {direction}.";
+            return;
+        }
+
+        JumpToAddress(foundAddress.Value, searchType);
+        SearchStatusText.Text = $"Found at {FormatRawAddress(foundAddress.Value)} ({direction}).";
     }
 
     private void NearbyGrid_OnScrollChanged(object sender, ScrollChangedEventArgs e)
@@ -784,6 +833,92 @@ public partial class NearbyAddressesWindow : Window
         ScrollToCenterAddressRow();
     }
 
+    private ulong? FindNearbyValueAddress(
+        ulong startAddress,
+        MemoryDataType dataType,
+        object searchValue,
+        string rawSearchText,
+        ulong rangeBytes,
+        NearbySearchDirection direction)
+    {
+        var step = (ulong)GetTypeSize(dataType);
+        if (step == 0)
+        {
+            return null;
+        }
+
+        var maxDelta = rangeBytes / step;
+        for (ulong deltaStep = 0; deltaStep <= maxDelta; deltaStep++)
+        {
+            var deltaBytes = MultiplyClamped(step, deltaStep);
+            ulong address;
+            if (direction == NearbySearchDirection.Up)
+            {
+                if (startAddress > ulong.MaxValue - deltaBytes)
+                {
+                    break;
+                }
+
+                address = startAddress + deltaBytes;
+            }
+            else
+            {
+                if (startAddress < deltaBytes)
+                {
+                    break;
+                }
+
+                address = startAddress - deltaBytes;
+            }
+
+            if (!_memoryAccessor.TryReadValue(address, dataType, out var currentValue))
+            {
+                continue;
+            }
+
+            if (MatchesSearchValue(dataType, currentValue, searchValue, rawSearchText))
+            {
+                return address;
+            }
+        }
+
+        return null;
+    }
+
+    private void JumpToAddress(ulong address, MemoryDataType dataType)
+    {
+        _activeFilter = null;
+        if (!Equals(DataTypeBox.SelectedItem, dataType))
+        {
+            DataTypeBox.SelectedItem = dataType;
+        }
+
+        _currentDataType = dataType;
+        _pageStartAddress = ComputeInitialPageStart(address, dataType, _entriesPerPage);
+        RebuildRows();
+        RefreshValues();
+        ScrollToAddressRow(address);
+    }
+
+    private void ScrollToAddressRow(ulong address)
+    {
+        var targetRow = Rows.FirstOrDefault(x => x.Address == address);
+        if (targetRow is null)
+        {
+            return;
+        }
+
+        NearbyGrid.SelectedItems.Clear();
+        NearbyGrid.SelectedItem = targetRow;
+        NearbyGrid.CurrentItem = targetRow;
+
+        _ = Dispatcher.BeginInvoke(DispatcherPriority.Loaded, new Action(() =>
+        {
+            CenterRowInViewport(targetRow);
+            _ = Dispatcher.BeginInvoke(DispatcherPriority.ContextIdle, new Action(() => CenterRowInViewport(targetRow)));
+        }));
+    }
+
     private void RefreshValues()
     {
         if (_allRows.Count == 0)
@@ -925,6 +1060,92 @@ public partial class NearbyAddressesWindow : Window
         {
             row.SetInvalid();
         }
+    }
+
+    private static bool MatchesSearchValue(MemoryDataType dataType, object currentValue, object searchValue, string? rawSearchText)
+    {
+        return dataType switch
+        {
+            MemoryDataType.Float => MatchesFloatSearch(currentValue, searchValue, rawSearchText),
+            MemoryDataType.Double => MatchesDoubleSearch(currentValue, searchValue, rawSearchText),
+            MemoryDataType.String => string.Equals(
+                Convert.ToString(currentValue, CultureInfo.InvariantCulture) ?? string.Empty,
+                Convert.ToString(searchValue, CultureInfo.InvariantCulture) ?? string.Empty,
+                StringComparison.Ordinal),
+            _ => TryCompareValuesByType(currentValue, searchValue, dataType, out var order) && order == 0
+        };
+    }
+
+    private static bool MatchesFloatSearch(object currentValue, object searchValue, string? rawSearchText)
+    {
+        var currentFloat = Convert.ToSingle(currentValue, CultureInfo.InvariantCulture);
+        var expectedFloat = Convert.ToSingle(searchValue, CultureInfo.InvariantCulture);
+        if (string.Equals(FormatValue(currentFloat), FormatValue(expectedFloat), StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var tolerance = ComputeFloatingTolerance(rawSearchText, 0.000001d, 6);
+        return Math.Abs(currentFloat - expectedFloat) <= tolerance;
+    }
+
+    private static bool MatchesDoubleSearch(object currentValue, object searchValue, string? rawSearchText)
+    {
+        var currentDouble = Convert.ToDouble(currentValue, CultureInfo.InvariantCulture);
+        var expectedDouble = Convert.ToDouble(searchValue, CultureInfo.InvariantCulture);
+        if (string.Equals(FormatValue(currentDouble), FormatValue(expectedDouble), StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var tolerance = ComputeFloatingTolerance(rawSearchText, 0.000000000001d, 6);
+        return Math.Abs(currentDouble - expectedDouble) <= tolerance;
+    }
+
+    private static double ComputeFloatingTolerance(string? rawInput, double defaultTolerance, int maxDisplayPrecision)
+    {
+        var fractionalDigits = CountFractionalDigits(rawInput);
+        if (fractionalDigits <= 0)
+        {
+            return defaultTolerance;
+        }
+
+        var normalizedDigits = Math.Min(fractionalDigits, maxDisplayPrecision);
+        return Math.Max(defaultTolerance, 0.5d * Math.Pow(10, -normalizedDigits));
+    }
+
+    private static int CountFractionalDigits(string? rawInput)
+    {
+        if (string.IsNullOrWhiteSpace(rawInput))
+        {
+            return 0;
+        }
+
+        var trimmed = rawInput.Trim();
+        var exponentIndex = trimmed.IndexOfAny(new[] { 'e', 'E' });
+        if (exponentIndex >= 0)
+        {
+            trimmed = trimmed[..exponentIndex];
+        }
+
+        var separatorIndex = Math.Max(trimmed.LastIndexOf('.'), trimmed.LastIndexOf(','));
+        if (separatorIndex < 0 || separatorIndex >= trimmed.Length - 1)
+        {
+            return 0;
+        }
+
+        var digits = 0;
+        for (var i = separatorIndex + 1; i < trimmed.Length; i++)
+        {
+            if (!char.IsDigit(trimmed[i]))
+            {
+                break;
+            }
+
+            digits++;
+        }
+
+        return digits;
     }
 
     private RelativePointerRouteRuntimeOptions? ShowRelativePointerRouteOptionsDialog(ulong targetAddress)
@@ -1745,6 +1966,26 @@ public partial class NearbyAddressesWindow : Window
         public string DisplayText { get; }
     }
 
+    private sealed class NearbySearchDirectionOption
+    {
+        public NearbySearchDirectionOption(NearbySearchDirection direction, string label)
+        {
+            Direction = direction;
+            Label = label;
+        }
+
+        public NearbySearchDirection Direction { get; }
+        public string Label { get; }
+
+        public override string ToString() => Label;
+    }
+
+    private enum NearbySearchDirection
+    {
+        Up,
+        Down
+    }
+
     private sealed class RelativePointerRouteOptions
     {
         public bool UseAutoRange { get; set; }
@@ -1838,6 +2079,23 @@ public partial class NearbyAddressesWindow : Window
         var half = (ulong)(entriesPerPage / 2);
         var backOffset = MultiplyClamped(step, half);
         return center >= backOffset ? center - backOffset : 0;
+    }
+
+    private static bool TryParseUnsignedLong(string? text, out ulong value)
+    {
+        value = 0;
+        if (string.IsNullOrWhiteSpace(text))
+        {
+            return false;
+        }
+
+        var trimmed = text.Trim();
+        if (trimmed.StartsWith("0x", StringComparison.OrdinalIgnoreCase))
+        {
+            return ulong.TryParse(trimmed[2..], NumberStyles.HexNumber, CultureInfo.InvariantCulture, out value);
+        }
+
+        return ulong.TryParse(trimmed, NumberStyles.Integer, CultureInfo.InvariantCulture, out value);
     }
 
     private static ulong MultiplyClamped(ulong left, ulong right)
