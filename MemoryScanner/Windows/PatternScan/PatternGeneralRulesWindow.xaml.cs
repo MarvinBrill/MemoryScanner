@@ -54,14 +54,16 @@ public partial class PatternGeneralRulesWindow : Window
         };
         var searchFocuses = new[]
         {
-            new SearchFocusOption(PatternSearchFocus.Coarse, "Coarse"),
-            new SearchFocusOption(PatternSearchFocus.Balanced, "Balanced"),
+            new SearchFocusOption(PatternSearchFocus.Balanced, "Fast"),
             new SearchFocusOption(PatternSearchFocus.Fine, "Fine")
         };
         SearchOrderBox.ItemsSource = searchOrders;
         SearchOrderBox.SelectedItem = searchOrders.FirstOrDefault(x => x.Value == currentOptions.SearchOrder) ?? searchOrders[0];
         SearchFocusBox.ItemsSource = searchFocuses;
-        SearchFocusBox.SelectedItem = searchFocuses.FirstOrDefault(x => x.Value == currentOptions.SearchFocus) ?? searchFocuses[1];
+        var normalizedFocus = currentOptions.SearchFocus == PatternSearchFocus.Fine
+            ? PatternSearchFocus.Fine
+            : PatternSearchFocus.Balanced;
+        SearchFocusBox.SelectedItem = searchFocuses.FirstOrDefault(x => x.Value == normalizedFocus) ?? searchFocuses[0];
         CustomStartPercentText.Text = currentOptions.CustomSearchStartPercent.ToString();
         StopAfterGapBox.IsChecked = currentOptions.StopAfterGapFromLastMatchEnabled;
         GapAddressesText.Text = currentOptions.MaxAddressesWithoutMatchAfterFirstHit.ToString();

@@ -20,7 +20,9 @@ public enum PatternSearchFocus
 public sealed class AddressPatternScanRequest
 {
     public MemoryDataType StartDataType { get; set; } = MemoryDataType.Int32;
+    public ScanComparison StartComparison { get; set; } = ScanComparison.Equal;
     public string StartValueText { get; set; } = string.Empty;
+    public string StartValueToText { get; set; } = string.Empty;
     public int StartStringByteLength { get; set; }
     public int StepSizeBytes { get; set; } = 4;
     public ObservableCollection<AddressPatternRuleDefinition> Rules { get; set; } = new();
@@ -43,6 +45,7 @@ public sealed class AddressPatternScanResult
     public MemoryDataType DataType { get; set; }
     public int StringByteLength { get; set; }
     public string PreviewText { get; set; } = string.Empty;
+    public double? GlobalAddressPercent { get; set; }
 }
 
 public sealed class PatternGeneralRuleOptions
@@ -57,7 +60,9 @@ public sealed class PatternGeneralRuleOptions
 public sealed class PatternScannerPreset
 {
     public MemoryDataType StartDataType { get; set; } = MemoryDataType.Int32;
+    public ScanComparison StartComparison { get; set; } = ScanComparison.Equal;
     public string StartValueText { get; set; } = string.Empty;
+    public string StartValueToText { get; set; } = string.Empty;
     public int StartStringByteLength { get; set; }
     public int StepSizeBytes { get; set; } = 4;
     public List<AddressPatternRuleDefinition> Rules { get; set; } = new();

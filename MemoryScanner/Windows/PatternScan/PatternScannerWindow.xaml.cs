@@ -49,7 +49,9 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         ResultGrid.ItemsSource = Rows;
 
         StartDataTypeBox.ItemsSource = DataTypeChoices;
+        StartComparisonBox.ItemsSource = RuleComparisonChoices;
         StartDataTypeBox.SelectedItem = MemoryDataType.Int32;
+        StartComparisonBox.SelectedItem = RuleComparisonChoices.First();
         StepSizeText.Text = "4";
 
         _valueRefreshTimer = new DispatcherTimer();
@@ -61,6 +63,7 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         RefreshRuleOffsetTexts();
         UpdateGeneralRulesButtonText();
         UpdateWindowTitle();
+        RefreshStartCriterionUi();
 
         SetIdleUi();
     }
@@ -196,16 +199,17 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
             var rows = results.Select(r => new PatternResultRow(r, _displayContext)).ToArray();
             Rows.ReplaceAll(rows);
             RefreshValuesAfterBulkLoad();
+            var firstResultPercentText = BuildFirstResultPercentText(results);
 
             if (_scanCts.IsCancellationRequested)
             {
-                _lastScanStatusText = $"Pattern scan canceled ({rows.Length} partial results) | {FormatElapsedMs()}";
+                _lastScanStatusText = $"Pattern scan canceled ({rows.Length} partial results){firstResultPercentText} | {FormatElapsedMs()}";
             }
             else
             {
                 PatternProgressBar.Value = 100;
                 _lastDisplayedProgressPercent = 100;
-                _lastScanStatusText = $"Pattern scan finished ({rows.Length} results) | {FormatElapsedMs()}";
+                _lastScanStatusText = $"Pattern scan finished ({rows.Length} results){firstResultPercentText} | {FormatElapsedMs()}";
             }
         }
         catch (OperationCanceledException)
@@ -330,13 +334,12 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
 
     private void StartDataTypeBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
     {
-        if (StartDataTypeBox.SelectedItem is MemoryDataType.String)
-        {
-            StartValueText.ToolTip = "Exact string match";
-            return;
-        }
+        RefreshStartCriterionUi();
+    }
 
-        StartValueText.ClearValue(ToolTipProperty);
+    private void StartComparisonBox_OnSelectionChanged(object sender, SelectionChangedEventArgs e)
+    {
+        RefreshStartCriterionUi();
     }
 
     private void StepSizeText_OnTextChanged(object sender, TextChangedEventArgs e)
@@ -354,10 +357,31 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
             return false;
         }
 
+        var startComparison = StartComparisonBox.SelectedItem as PatternRuleComparisonOption;
+        if (startComparison is null)
+        {
+            MessageBox.Show(this, "Select a valid start condition.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        if (startType == MemoryDataType.String && startComparison.Value is not (ScanComparison.Equal or ScanComparison.NotEqual))
+        {
+            MessageBox.Show(this, "String start values only support Equal/Not Equal.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
         var startValueText = StartValueText.Text?.Trim() ?? string.Empty;
         if (!ScanService.TryParseValue(startType, startValueText, out _))
         {
             MessageBox.Show(this, "Enter a valid start value.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
+            return false;
+        }
+
+        var startValueToText = StartValueToText.Text?.Trim() ?? string.Empty;
+        if (startComparison.Value == ScanComparison.Between
+            && !ScanService.TryParseValue(startType, startValueToText, out _))
+        {
+            MessageBox.Show(this, "Enter a valid upper start range value.", "Input Error", MessageBoxButton.OK, MessageBoxImage.Warning);
             return false;
         }
 
@@ -405,7 +429,9 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         request = new AddressPatternScanRequest
         {
             StartDataType = startType,
+            StartComparison = startComparison.Value,
             StartValueText = startValueText,
+            StartValueToText = startValueToText,
             StartStringByteLength = startType == MemoryDataType.String ? ResolveStringByteLength(startValueText) : 0,
             StepSizeBytes = stepSizeBytes,
             Rules = ruleDefinitions,
@@ -423,7 +449,9 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         StartScanButton.IsEnabled = false;
         PatternScanOptionsButton.IsEnabled = false;
         StartDataTypeBox.IsEnabled = false;
+        StartComparisonBox.IsEnabled = false;
         StartValueText.IsEnabled = false;
+        StartValueToText.IsEnabled = false;
         StepSizeText.IsEnabled = false;
         RuleGrid.IsEnabled = false;
         CancelScanButton.IsEnabled = true;
@@ -440,11 +468,14 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         StartScanButton.IsEnabled = true;
         PatternScanOptionsButton.IsEnabled = true;
         StartDataTypeBox.IsEnabled = true;
+        StartComparisonBox.IsEnabled = true;
         StartValueText.IsEnabled = true;
+        StartValueToText.IsEnabled = true;
         StepSizeText.IsEnabled = true;
         RuleGrid.IsEnabled = true;
         CancelScanButton.IsEnabled = false;
         UpdateTakeSelectedState();
+        RefreshStartCriterionUi();
         UpdateIdleText();
     }
 
@@ -480,7 +511,7 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
 
         GeneralRulesButton.Content = _generalRules.StopAfterGapFromLastMatchEnabled
             || _generalRules.SearchOrder != PatternSearchOrder.StartToEnd
-            || _generalRules.SearchFocus != PatternSearchFocus.Balanced
+            || _generalRules.SearchFocus == PatternSearchFocus.Fine
             ? $"General Rules*"
             : "General Rules";
     }
@@ -496,9 +527,8 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         };
         var focusText = _generalRules.SearchFocus switch
         {
-            PatternSearchFocus.Coarse => "Focus Coarse",
             PatternSearchFocus.Fine => "Focus Fine",
-            _ => "Focus Balanced"
+            _ => "Focus Fast"
         };
 
         if (_generalRules.StopAfterGapFromLastMatchEnabled)
@@ -650,6 +680,35 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         }
     }
 
+    private void RefreshStartCriterionUi()
+    {
+        var selectedType = StartDataTypeBox.SelectedItem as MemoryDataType? ?? MemoryDataType.Int32;
+        var selectedComparison = StartComparisonBox.SelectedItem as PatternRuleComparisonOption ?? RuleComparisonChoices.First();
+
+        if (selectedType == MemoryDataType.String
+            && selectedComparison.Value is not (ScanComparison.Equal or ScanComparison.NotEqual))
+        {
+            var fallback = RuleComparisonChoices.FirstOrDefault(option => option.Value == ScanComparison.Equal) ?? RuleComparisonChoices.First();
+            StartComparisonBox.SelectedItem = fallback;
+            selectedComparison = fallback;
+        }
+
+        var isRange = selectedComparison.Value == ScanComparison.Between;
+        StartValueToLabel.IsEnabled = isRange;
+        StartValueToText.IsEnabled = !_isScanRunning && isRange;
+        StartValueToText.Visibility = isRange ? Visibility.Visible : Visibility.Collapsed;
+        StartValueToLabel.Visibility = isRange ? Visibility.Visible : Visibility.Collapsed;
+
+        if (selectedType == MemoryDataType.String)
+        {
+            StartValueText.ToolTip = "String start values support Equal and Not Equal.";
+        }
+        else
+        {
+            StartValueText.ClearValue(ToolTipProperty);
+        }
+    }
+
     private static int ResolveStringByteLength(string value)
     {
         return Math.Clamp(System.Text.Encoding.UTF8.GetByteCount(value) + 1, 1, 4096);
@@ -671,6 +730,19 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
     {
         var elapsed = _scanStopwatch?.ElapsedMilliseconds ?? 0;
         return $"{elapsed} ms";
+    }
+
+    private static string BuildFirstResultPercentText(IReadOnlyList<AddressPatternScanResult> results)
+    {
+        if (results.Count == 0)
+        {
+            return string.Empty;
+        }
+
+        var firstResultPercent = results[0].GlobalAddressPercent;
+        return firstResultPercent.HasValue
+            ? $" | First result @ {firstResultPercent.Value:0.0}%"
+            : string.Empty;
     }
 
     private static PatternGeneralRuleOptions CloneGeneralRules(PatternGeneralRuleOptions source)
@@ -715,7 +787,9 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
         return new PatternScannerPreset
         {
             StartDataType = startType,
+            StartComparison = (StartComparisonBox.SelectedItem as PatternRuleComparisonOption)?.Value ?? ScanComparison.Equal,
             StartValueText = StartValueText.Text ?? string.Empty,
+            StartValueToText = StartValueToText.Text ?? string.Empty,
             StartStringByteLength = startType == MemoryDataType.String ? ResolveStringByteLength(StartValueText.Text ?? string.Empty) : 0,
             StepSizeBytes = stepSizeBytes,
             Rules = Rules.Select(row => new AddressPatternRuleDefinition
@@ -734,7 +808,9 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
     private void ApplyPreset(PatternScannerPreset preset)
     {
         StartDataTypeBox.SelectedItem = preset.StartDataType;
+        StartComparisonBox.SelectedItem = RuleComparisonChoices.FirstOrDefault(option => option.Value == preset.StartComparison) ?? RuleComparisonChoices.First();
         StartValueText.Text = preset.StartValueText ?? string.Empty;
+        StartValueToText.Text = preset.StartValueToText ?? string.Empty;
         StepSizeText.Text = Math.Max(1, preset.StepSizeBytes).ToString(CultureInfo.InvariantCulture);
         _generalRules = CloneGeneralRules(preset.GeneralRules ?? new PatternGeneralRuleOptions());
         _scanOptions = CloneScanOptions(preset.ScanOptions ?? new ScanExecutionOptions());
@@ -757,6 +833,7 @@ public partial class PatternScannerWindow : Window, INotifyPropertyChanged
 
         RefreshRuleOffsetTexts();
         UpdateGeneralRulesButtonText();
+        RefreshStartCriterionUi();
     }
 
     private static IReadOnlyList<PatternRuleComparisonOption> BuildRuleComparisonOptions()

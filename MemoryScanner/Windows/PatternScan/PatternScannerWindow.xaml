@@ -46,6 +46,8 @@
         <Grid Grid.Row="2" Margin="0,0,0,8">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="*"/>
+                <ColumnDefinition Width="180"/>
+                <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="*"/>
                 <ColumnDefinition Width="150"/>
                 <ColumnDefinition Width="Auto"/>
@@ -62,6 +64,15 @@
             </StackPanel>
 
             <StackPanel Grid.Column="1" Margin="0,0,8,0">
+                <TextBlock Text="Start Condition" Foreground="#FFE6E6E6"/>
+                <ComboBox x:Name="StartComparisonBox"
+                          Margin="0,4,0,0"
+                          Height="28"
+                          SelectionChanged="StartComparisonBox_OnSelectionChanged"
+                          DisplayMemberPath="Label"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="2" Margin="0,0,8,0">
                 <TextBlock Text="Start Value" Foreground="#FFE6E6E6"/>
                 <TextBox x:Name="StartValueText"
                          Margin="0,4,0,0"
@@ -69,7 +80,15 @@
                          VerticalContentAlignment="Center"/>
             </StackPanel>
 
-            <StackPanel Grid.Column="2" Margin="0,0,8,0">
+            <StackPanel Grid.Column="3" Margin="0,0,8,0">
+                <TextBlock x:Name="StartValueToLabel" Text="Start Value To" Foreground="#FFE6E6E6"/>
+                <TextBox x:Name="StartValueToText"
+                         Margin="0,4,0,0"
+                         Height="28"
+                         VerticalContentAlignment="Center"/>
+            </StackPanel>
+
+            <StackPanel Grid.Column="4" Margin="0,0,8,0">
                 <TextBlock Text="Step Size (bytes)" Foreground="#FFE6E6E6"/>
                 <TextBox x:Name="StepSizeText"
                          Margin="0,4,0,0"
@@ -78,7 +97,7 @@
                          TextChanged="StepSizeText_OnTextChanged"/>
             </StackPanel>
 
-            <Button Grid.Column="3"
+            <Button Grid.Column="5"
                     x:Name="PatternScanOptionsButton"
                     Content="Scan Options"
                     Width="110"
@@ -86,7 +105,7 @@
                     Margin="8,18,8,0"
                     Click="PatternScanOptions_OnClick"/>
 
-            <Button Grid.Column="4"
+            <Button Grid.Column="6"
                     x:Name="StartScanButton"
                     Content="Start Scan"
                     Width="110"
@@ -94,7 +113,7 @@
                     Margin="0,18,8,0"
                     Click="StartScan_OnClick"/>
 
-            <Button Grid.Column="5"
+            <Button Grid.Column="7"
                     x:Name="CancelScanButton"
                     Content="Cancel"
                     Width="90"

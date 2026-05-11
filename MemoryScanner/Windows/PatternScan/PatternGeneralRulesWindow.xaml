@@ -85,7 +85,7 @@
                 Margin="0,4,0,0">
             <TextBlock TextWrapping="Wrap"
                        Foreground="#FF333333"
-                       Text="When enabled, the scanner continues collecting repeated pattern hits. After the first hit, if no new match appears within the configured address gap, the scan stops early and shows the results found so far."/>
+                       Text="When enabled, the scanner continues collecting repeated pattern hits. Fine uses an exact address-by-address gap stop. Fast keeps the quicker batched scan path and stops more approximately after larger blocks."/>
         </Border>
 
         <StackPanel Grid.Row="6"
